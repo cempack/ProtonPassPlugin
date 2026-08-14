@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.cempack.proton-pass",
+  "name": "Proton Pass",
+  "version": "1.1.0",
+  "author": "Elliot",
+  "license": "MIT",
+  "description": "Search and copy Proton Pass logins from the Omarchy bar, in an Apple Passwords-style popover.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Proton Pass",
+    "description": "Search Proton Pass logins and copy passwords from the bar.",
+    "category": "Security",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "passCliPath": "pass-cli",
+      "maxRecent": 8,
+      "cacheMinutes": 15
+    },
+    "schema": [
+      {
+        "key": "passCliPath",
+        "type": "string",
+        "label": "pass-cli path",
+        "defaultValue": "pass-cli",
+        "description": "Command used to talk to Proton Pass. Use a full path if pass-cli is not on PATH."
+      },
+      {
+        "key": "maxRecent",
+        "type": "integer",
+        "label": "Recently created count",
+        "min": 1,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 8
+      },
+      {
+        "key": "cacheMinutes",
+        "type": "integer",
+        "label": "Cache lifetime (minutes)",
+        "min": 1,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 15,
+        "description": "How long login titles stay on disk before a background refresh. Opening the panel always uses the cache; passwords are never stored."
+      }
+    ]
+  }
+}
