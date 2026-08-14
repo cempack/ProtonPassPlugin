@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, classifyError }\n"
+    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, classifyError, cleanCliText, displayError }\n"
 )()
 
 function summaryList() {
@@ -184,6 +184,10 @@ assert.strictEqual(Model.classifyError("please login first", 1), "unauthenticate
 assert.strictEqual(Model.classifyError("Session is locked", 1), "locked")
 assert.strictEqual(Model.classifyError("pass-cli: command not found", 127), "missing")
 assert.strictEqual(Model.classifyError("boom", 1), "error")
+assert.strictEqual(Model.classifyError("[2m2026-08-14T23:55:02.359500Z[0m [31mERROR[0m [2mpass-cli/src/main.rs[0m[2m:[0m[2m332:[0m Command is not logout there is no session", 1), "unauthenticated")
+assert.strictEqual(Model.cleanCliText("[31mERROR[0m boom"), "ERROR boom")
+assert.strictEqual(Model.displayError("[2m2026-08-14T23:55:02.359500Z[0m [31mERROR[0m [2mpass-cli/src/main.rs[0m[2m:[0m[2m332:[0m Command is not logout there is no session"), "")
+assert.strictEqual(Model.displayError("vault missing"), "vault missing")
 
 assert.deepStrictEqual(Model.parseItemList("not-json", ""), [])
 assert.deepStrictEqual(Model.parseVaultList(""), [])

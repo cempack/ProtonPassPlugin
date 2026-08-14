@@ -80,8 +80,7 @@ Item {
   }
 
   function elideStatus(text) {
-    var value = String(text || "").replace(/\s+/g, " ").trim()
-    return value.length > 140 ? value.substring(0, 137) + "…" : value
+    return Model.displayError(text)
   }
 
   function resetViewed() {
@@ -261,6 +260,7 @@ Item {
     var uri = Model.passUri(item, field || "password")
     if (uri === "" || viewProcess.running) return
     resetViewed()
+    lastError = ""
     viewedField = String(field || "password")
     viewing = true
     _viewOutput = ""

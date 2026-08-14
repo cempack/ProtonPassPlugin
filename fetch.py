@@ -31,7 +31,13 @@ def classify(stderr: str, code: int) -> str:
         return "missing"
     if "locked" in text or "session lock" in text or "unlock" in text:
         return "locked"
-    if "login" in text or "not logged" in text or "unauthenticated" in text or "unauthorized" in text:
+    if (
+        "no session" in text
+        or "login" in text
+        or "not logged" in text
+        or "unauthenticated" in text
+        or "unauthorized" in text
+    ):
         return "unauthenticated"
     return "error"
 

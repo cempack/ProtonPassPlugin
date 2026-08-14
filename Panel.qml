@@ -701,7 +701,7 @@ Panel {
               label: "Password"
               value: {
                 if (pass.copying && pass.viewedField === "password") return "Copying…"
-                if (pass.viewing && pass.viewedField === "password") return "Loading…"
+                if (pass.viewing && pass.viewedField === "password" && pass.lastError === "") return "Loading…"
                 if (root.passwordVisible && pass.viewedField === "password" && pass.viewedValue !== "")
                   return pass.viewedValue
                 return root.maskedSecret()
@@ -723,7 +723,7 @@ Panel {
               label: "Code"
               value: {
                 if (pass.copying && pass.viewedField === "totp") return "Copying…"
-                if (pass.viewing && pass.viewedField === "totp") return "Loading…"
+                if (pass.viewing && pass.viewedField === "totp" && pass.lastError === "") return "Loading…"
                 if (pass.viewedField === "totp" && pass.viewedValue !== "") return pass.viewedValue
                 return "Tap to show"
               }

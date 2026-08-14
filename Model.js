@@ -284,13 +284,29 @@ function withoutItems(items, skip) {
   return out
 }
 
+function cleanCliText(text) {
+  return String(text || "")
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\[(?:\d{1,3};)*\d{1,3}m/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function displayError(stderr) {
+  var value = cleanCliText(stderr)
+  if (value === "") return ""
+  if (value.indexOf(".rs:") >= 0 || value.indexOf("pass-cli/src/") >= 0)
+    return ""
+  return value.length > 140 ? value.substring(0, 137) + "…" : value
+}
+
 function classifyError(stderr, exitCode) {
-  var text = String(stderr || "").toLowerCase()
+  var text = cleanCliText(stderr).toLowerCase()
   if (Number(exitCode) === 127 || text.indexOf("command not found") >= 0 || text.indexOf("no such file") >= 0)
     return "missing"
   if (text.indexOf("locked") >= 0 || text.indexOf("session lock") >= 0 || text.indexOf("unlock") >= 0)
     return "locked"
-  if (text.indexOf("login") >= 0 || text.indexOf("not logged") >= 0 || text.indexOf("unauthenticated") >= 0 || text.indexOf("unauthorized") >= 0)
+  if (text.indexOf("no session") >= 0 || text.indexOf("login") >= 0 || text.indexOf("not logged") >= 0 || text.indexOf("unauthenticated") >= 0 || text.indexOf("unauthorized") >= 0)
     return "unauthenticated"
   return "error"
 }
