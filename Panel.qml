@@ -18,6 +18,9 @@ Panel {
   readonly property var barIdentity: hostWidget || root
 
   property string filterText: ""
+  property string debouncedFilter: ""
+  property string snapshotAppId: ""
+  property string snapshotTitle: ""
   property string viewMode: "list"  // list | detail | create
   property var selectedItem: null
   property int selectedIndex: 0
@@ -45,12 +48,13 @@ Panel {
       out.push({ value: vaults[i].shareId, label: vaults[i].name })
     return out
   }
-  readonly property bool searching: String(filterText).trim() !== ""
-  readonly property var suggested: Model.suggestedItems(pass.items, activeAppId, activeTitle)
+  readonly property var emptyItems: []
+  readonly property bool searching: String(debouncedFilter).trim() !== ""
+  readonly property var suggested: Model.suggestedItems(pass.items, snapshotAppId, snapshotTitle)
   readonly property var rankedItems: Model.recentlyUsed(pass.items)
   readonly property var recent: Model.withoutItems(rankedItems, suggested)
-  readonly property var filtered: Model.searchItems(rankedItems, filterText)
-  readonly property var cursorItems: searching ? filtered : combineItems(suggested, recent)
+  readonly property var filtered: searching ? Model.searchItems(rankedItems, debouncedFilter) : emptyItems
+  readonly property int cursorCount: Model.cursorItemCount(searching, suggested, recent, filtered)
   readonly property bool listReady: pass.status === "ready" || pass.items.length > 0
   readonly property bool showList: listReady && viewMode === "list"
   readonly property bool showDetail: viewMode === "detail" && selectedItem !== null
@@ -71,12 +75,14 @@ Panel {
   }
 
   function open() {
+    snapshotActiveContext()
     resetSession(false)
     root.controller.show()
     pass.ensureFresh()
   }
 
   function openFromHotkey() {
+    snapshotActiveContext()
     resetSession(false)
     root.controller.show()
     pass.ensureFresh()
@@ -115,6 +121,23 @@ Panel {
     pass.refresh(true)
   }
 
+  function snapshotActiveContext() {
+    snapshotAppId = activeAppId
+    snapshotTitle = activeTitle
+  }
+
+  function setFilterText(value) {
+    filterText = String(value || "")
+    selectedIndex = 0
+    cursorActive = true
+    if (String(filterText).trim() === "") {
+      searchDebounceTimer.stop()
+      debouncedFilter = ""
+      return
+    }
+    searchDebounceTimer.restart()
+  }
+
   function resetSession(keepFilter) {
     viewMode = "list"
     selectedItem = null
@@ -123,7 +146,11 @@ Panel {
     passwordVisible = false
     pass.resetViewed()
     resetDraft()
-    if (!keepFilter) filterText = ""
+    if (!keepFilter) {
+      searchDebounceTimer.stop()
+      filterText = ""
+      debouncedFilter = ""
+    }
   }
 
   function resetDraft() {
@@ -141,26 +168,17 @@ Panel {
   }
 
   function clampSelection() {
-    if (cursorItems.length === 0) {
+    if (cursorCount === 0) {
       selectedIndex = 0
       return
     }
-    if (selectedIndex >= cursorItems.length) selectedIndex = cursorItems.length - 1
+    if (selectedIndex >= cursorCount) selectedIndex = cursorCount - 1
     if (selectedIndex < 0) selectedIndex = 0
-  }
-
-  function combineItems(left, right) {
-    var out = []
-    var a = left || []
-    var b = right || []
-    for (var i = 0; i < a.length; i++) out.push(a[i])
-    for (var j = 0; j < b.length; j++) out.push(b[j])
-    return out
   }
 
   function moveCursor(dx, dy) {
     if (viewMode === "detail" || viewMode === "create") return
-    if (cursorItems.length === 0) return
+    if (cursorCount === 0) return
     if (searchField && searchField.activeFocus) searchField.focus = false
     if (!cursorActive) {
       cursorActive = true
@@ -172,8 +190,7 @@ Panel {
   }
 
   function currentRow() {
-    if (selectedIndex < 0 || selectedIndex >= cursorItems.length) return null
-    return cursorItems[selectedIndex]
+    return Model.cursorItemAt(searching, suggested, recent, filtered, selectedIndex)
   }
 
   function openDetail(item) {
@@ -298,6 +315,7 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
+      snapshotActiveContext()
       if (listView) listView.positionViewAtBeginning()
       focusSearch()
       Qt.callLater(function() {
@@ -310,7 +328,22 @@ Panel {
     }
   }
 
-  onCursorItemsChanged: {
+  onCursorCountChanged: {
+    clampSelection()
+    if (opened) previewScrollTimer.restart()
+  }
+
+  onSuggestedChanged: {
+    clampSelection()
+    if (opened) previewScrollTimer.restart()
+  }
+
+  onRecentChanged: {
+    clampSelection()
+    if (opened) previewScrollTimer.restart()
+  }
+
+  onFilteredChanged: {
     clampSelection()
     if (opened) previewScrollTimer.restart()
   }
@@ -318,6 +351,13 @@ Panel {
   PassService {
     id: pass
     settings: root.settings
+  }
+
+  Timer {
+    id: searchDebounceTimer
+    interval: 100
+    repeat: false
+    onTriggered: root.debouncedFilter = root.filterText
   }
 
   Timer {
@@ -463,15 +503,11 @@ Panel {
             text: root.filterText
             foreground: root.foreground
             font.family: root.fontFamily
-            onTextChanged: {
-              root.filterText = text
-              root.selectedIndex = 0
-              root.cursorActive = true
-            }
+            onTextChanged: root.setFilterText(text)
             Keys.onPressed: function(event) {
               if (event.key === Qt.Key_Escape) {
                 if (root.filterText !== "") {
-                  root.filterText = ""
+                  root.setFilterText("")
                   text = ""
                 } else {
                   root.close()
@@ -484,7 +520,8 @@ Panel {
                 if (keyCatcher) keyCatcher.forceActiveFocus()
                 event.accepted = true
               } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                if (root.cursorItems.length > 0) root.copyPasswordAndClose(root.cursorItems[0])
+                var first = Model.cursorItemAt(root.searching, root.suggested, root.recent, root.filtered, 0)
+                if (first) root.copyPasswordAndClose(first)
                 event.accepted = true
               }
             }

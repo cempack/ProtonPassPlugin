@@ -7,10 +7,11 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow }\n"
+    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow, cursorItemCount, cursorItemAt }\n"
 )()
 
 const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const passServiceSource = fs.readFileSync(path.join(__dirname, "..", "PassService.qml"), "utf8")
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
 const readmeSource = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
 
@@ -92,5 +93,52 @@ assert.ok(
   "manifest schema must not expose maxRecent"
 )
 assert.doesNotMatch(readmeSource, /maxRecent/, "README must not document maxRecent")
+
+assert.match(panelSource, /snapshotAppId|snapshottedAppId|contextAppId/, "panel snapshots active app id on open")
+assert.match(panelSource, /snapshotTitle|snapshottedTitle|contextTitle/, "panel snapshots active title on open")
+assert.match(
+  panelSource,
+  /suggestedItems\(pass\.items,\s*(root\.)?(snapshotAppId|snapshottedAppId|contextAppId)/,
+  "suggested uses snapped window context, not live focus"
+)
+assert.match(panelSource, /debounc|filterDebounc|debouncedFilter/, "search filtering is debounced")
+assert.match(panelSource, /interval:\s*100/, "search debounce stays near 100ms")
+assert.doesNotMatch(
+  panelSource,
+  /readonly property var filtered:\s*Model\.searchItems\(rankedItems,\s*filterText\)/,
+  "filtered must not recompute from live filterText while empty/searching"
+)
+assert.doesNotMatch(
+  panelSource,
+  /readonly property var cursorItems:\s*searching\s*\?\s*filtered\s*:\s*combineItems/,
+  "keyboard selection must not build a combined suggested+recent array"
+)
+assert.match(
+  panelSource,
+  /cursorItemCount|cursorItemAt/,
+  "keyboard selection derives count/row from suggested/recent/filtered helpers"
+)
+assert.match(
+  passServiceSource,
+  /applyPreviewUpdates|_pendingPreview|previewMerge|flushPendingPreview/,
+  "non-urgent preview merges are batched"
+)
+assert.match(
+  passServiceSource,
+  /rememberFailedPreviewKey|hasFailedPreviewKey|_failedPreview/,
+  "failed preview keys are tracked with backoff"
+)
+assert.match(
+  passServiceSource,
+  /isSessionBlockingStatus/,
+  "locked/unauthenticated preview errors stop preview work via shared classifier"
+)
+
+var suggested = [{ id: "s", shareId: "v", title: "S" }]
+var recent = [{ id: "r", shareId: "v", title: "R" }]
+var filtered = [{ id: "f", shareId: "v", title: "F" }]
+assert.strictEqual(Model.cursorItemCount(false, suggested, recent, filtered), 2)
+assert.strictEqual(Model.cursorItemAt(false, suggested, recent, filtered, 1).title, "R")
+assert.strictEqual(Model.cursorItemAt(true, suggested, recent, filtered, 0).title, "F")
 
 console.log("ok")

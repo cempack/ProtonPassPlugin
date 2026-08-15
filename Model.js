@@ -492,6 +492,84 @@ function listScrollTargetIndex(searching, selectedIndex, suggestedLength) {
   return idx >= 0 ? idx : -1
 }
 
+function cursorItemCount(searching, suggested, recent, filtered) {
+  if (searching) return (filtered || []).length
+  return (suggested || []).length + (recent || []).length
+}
+
+function cursorItemAt(searching, suggested, recent, filtered, index) {
+  var idx = Number(index)
+  if (!isFinite(idx) || idx < 0) return null
+  if (searching) {
+    var rows = filtered || []
+    return idx < rows.length ? rows[idx] : null
+  }
+  var left = suggested || []
+  if (idx < left.length) return left[idx]
+  var right = recent || []
+  var offset = idx - left.length
+  return offset < right.length ? right[offset] : null
+}
+
+function applyPreviewUpdates(items, updates) {
+  var list = items || []
+  var map = updates && typeof updates === "object" && !Array.isArray(updates) ? updates : null
+  if (!map) return list
+  var keys = Object.keys(map)
+  if (keys.length === 0) return list
+  var out = []
+  var changed = false
+  for (var i = 0; i < list.length; i++) {
+    var current = list[i]
+    var key = itemKey(current)
+    if (key !== "/" && Object.prototype.hasOwnProperty.call(map, key)) {
+      out.push(mergeItemPreview(current, map[key]))
+      changed = true
+    } else {
+      out.push(current)
+    }
+  }
+  return changed ? out : list
+}
+
+function rememberFailedPreviewKey(store, key, maxSize) {
+  var value = String(key || "")
+  var cap = parseInt(maxSize, 10)
+  if (!isFinite(cap) || cap < 1) cap = 64
+  var current = store && typeof store === "object" ? store : { map: {}, order: [] }
+  var map = {}
+  var order = []
+  var prevMap = current.map && typeof current.map === "object" ? current.map : {}
+  var prevOrder = Array.isArray(current.order) ? current.order : []
+  for (var i = 0; i < prevOrder.length; i++) {
+    var existing = String(prevOrder[i] || "")
+    if (!existing || existing === value || !prevMap[existing]) continue
+    map[existing] = true
+    order.push(existing)
+  }
+  if (value !== "") {
+    map[value] = true
+    order.push(value)
+  }
+  while (order.length > cap) {
+    var dropped = order.shift()
+    delete map[dropped]
+  }
+  return { map: map, order: order }
+}
+
+function hasFailedPreviewKey(store, key) {
+  if (!store || typeof store !== "object" || !store.map) return false
+  var value = String(key || "")
+  if (value === "") return false
+  return store.map[value] === true
+}
+
+function isSessionBlockingStatus(status) {
+  var kind = String(status || "")
+  return kind === "locked" || kind === "unauthenticated" || kind === "migration-required"
+}
+
 function visiblePreviewWindow(searching, suggested, list, viewport) {
   var out = []
   if (!searching) {

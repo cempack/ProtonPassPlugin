@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, classifyError, cleanCliText, displayError }\n"
+    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, applyPreviewUpdates, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, rememberFailedPreviewKey, hasFailedPreviewKey, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
 )()
 
 function summaryList() {
@@ -342,5 +342,66 @@ assert.deepStrictEqual(generated, [
   "--generate-password"
 ])
 assert.ok(!generated.includes("--password"))
+
+const suggestedRows = [
+  { id: "s1", shareId: "share", title: "Suggested" },
+  { id: "s2", shareId: "share", title: "Also" }
+]
+const recentRows = [
+  { id: "r1", shareId: "share", title: "Recent One" },
+  { id: "r2", shareId: "share", title: "Recent Two" },
+  { id: "r3", shareId: "share", title: "Recent Three" }
+]
+const filteredRows = [
+  { id: "f1", shareId: "share", title: "Filtered" }
+]
+assert.strictEqual(Model.cursorItemCount(false, suggestedRows, recentRows, filteredRows), 5)
+assert.strictEqual(Model.cursorItemCount(true, suggestedRows, recentRows, filteredRows), 1)
+assert.strictEqual(Model.cursorItemAt(false, suggestedRows, recentRows, filteredRows, 0).title, "Suggested")
+assert.strictEqual(Model.cursorItemAt(false, suggestedRows, recentRows, filteredRows, 2).title, "Recent One")
+assert.strictEqual(Model.cursorItemAt(true, suggestedRows, recentRows, filteredRows, 0).title, "Filtered")
+assert.strictEqual(Model.cursorItemAt(false, suggestedRows, recentRows, filteredRows, 99), null)
+
+const baseItems = [
+  { id: "a", shareId: "s", title: "A", username: "", email: "", urls: [], hasTotp: false, lastUsedAt: 0 },
+  { id: "b", shareId: "s", title: "B", username: "", email: "", urls: [], hasTotp: false, lastUsedAt: 0 },
+  { id: "c", shareId: "s", title: "C", username: "keep", email: "", urls: [], hasTotp: false, lastUsedAt: 1 }
+]
+const batched = Model.applyPreviewUpdates(baseItems, {
+  "s/a": { username: "alice", email: "a@example.com", urls: ["https://a.example"], hasTotp: true, password: "nope", totp_uri: "otpauth://secret" },
+  "s/b": { username: "bob", password: "also-nope", totpUri: "otpauth://other" }
+})
+assert.strictEqual(batched.length, 3)
+assert.strictEqual(batched[0].username, "alice")
+assert.strictEqual(batched[0].email, "a@example.com")
+assert.deepStrictEqual(batched[0].urls, ["https://a.example"])
+assert.strictEqual(batched[0].hasTotp, true)
+assert.strictEqual(batched[1].username, "bob")
+assert.strictEqual(batched[2].username, "keep")
+assert.ok(!("password" in batched[0]) && !("password" in batched[1]))
+assert.ok(!("totp_uri" in batched[0]) && !("totpUri" in batched[1]))
+assert.ok(!JSON.stringify(batched).includes("nope"))
+assert.ok(!JSON.stringify(batched).includes("otpauth"))
+assert.ok(!JSON.stringify(batched).includes("also-nope"))
+
+const unchanged = Model.applyPreviewUpdates(baseItems, {})
+assert.strictEqual(unchanged, baseItems, "empty batch should keep the same array reference")
+
+var failedStore = { map: {}, order: [] }
+failedStore = Model.rememberFailedPreviewKey(failedStore, "s/a", 3)
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), true)
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/b"), false)
+failedStore = Model.rememberFailedPreviewKey(failedStore, "s/b", 3)
+failedStore = Model.rememberFailedPreviewKey(failedStore, "s/c", 3)
+failedStore = Model.rememberFailedPreviewKey(failedStore, "s/d", 3)
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), false, "oldest failed key is evicted at cap")
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/d"), true)
+assert.strictEqual(failedStore.order.length, 3)
+
+assert.strictEqual(Model.isSessionBlockingStatus("locked"), true)
+assert.strictEqual(Model.isSessionBlockingStatus("unauthenticated"), true)
+assert.strictEqual(Model.isSessionBlockingStatus("migration-required"), true, "classify hook ready for Task 4")
+assert.strictEqual(Model.isSessionBlockingStatus("error"), false)
+assert.strictEqual(Model.isSessionBlockingStatus("missing"), false)
 
 console.log("ok")

@@ -47,6 +47,9 @@ Item {
   property var _previewQueue: []
   property string _urgentPreviewKey: ""
   property bool previewsEnabled: false
+  property var _pendingPreviewUpdates: ({})
+  property var _failedPreviewKeys: ({ map: {}, order: [] })
+  property bool _previewSessionBlocked: false
   property string _fetchOutput: ""
   property string _fetchError: ""
   property string _copyError: ""
@@ -63,7 +66,6 @@ Item {
   property bool _openWantsFresh: false
   property double _peerRefreshingAt: 0
   property double _pendingRefreshingAt: 0
-
   signal copied()
   signal copyFailed(string message)
   signal itemUpdated(var item)
@@ -96,6 +98,7 @@ Item {
     status = kind
     lastError = String(message || "")
     refreshing = false
+    if (kind === "ready") _previewSessionBlocked = false
   }
 
   function statusMessageFor(kind, stderr) {
@@ -273,7 +276,7 @@ Item {
   }
 
   function previewItem(item) {
-    if (!item) return
+    if (!item || _previewSessionBlocked) return
     lastError = ""
     _urgentPreviewKey = Model.itemKey(item)
     enqueuePreview(item)
@@ -288,10 +291,12 @@ Item {
   }
 
   function enqueuePreview(item) {
+    if (_previewSessionBlocked) return
     var current = findItem(item) || item
     if (!needsPreview(current)) return
     var key = Model.itemKey(current)
     if (key === "/" || key === "") return
+    if (Model.hasFailedPreviewKey(_failedPreviewKeys, key)) return
     if (_previewItem && Model.itemKey(_previewItem) === key) return
     var next = []
     for (var i = 0; i < _previewQueue.length; i++) {
@@ -303,7 +308,7 @@ Item {
   }
 
   function requestPreviews(list) {
-    if (!previewsEnabled) return
+    if (!previewsEnabled || _previewSessionBlocked) return
     var rows = list || []
     for (var i = rows.length - 1; i >= 0; i--) enqueuePreview(rows[i])
     if (!previewProcess.running) root.startNextPreview(false)
@@ -315,15 +320,68 @@ Item {
   }
 
   function stopPreviews() {
+    flushPendingPreviews()
     previewsEnabled = false
     _previewQueue = []
     _urgentPreviewKey = ""
     previewing = false
     previewTimer.stop()
+    previewMergeTimer.stop()
+    _pendingPreviewUpdates = ({})
+  }
+
+  function markPreviewFailed(key) {
+    _failedPreviewKeys = Model.rememberFailedPreviewKey(_failedPreviewKeys, key, 64)
+  }
+
+  function blockPreviewSession(kind, stderr) {
+    _previewSessionBlocked = true
+    stopPreviews()
+    var message = statusMessageFor(kind, stderr)
+    if (lastError === "" || status !== kind)
+      applyStatus(kind, message)
+    else
+      lastError = message
+  }
+
+  function queuePreviewUpdate(item, preview, urgent) {
+    if (!item || !preview) return
+    var key = Model.itemKey(item)
+    if (key === "/" || key === "") return
+    if (urgent === true) {
+      flushPendingPreviews()
+      replaceItem(Model.mergeItemPreview(findItem(item) || item, preview))
+      return
+    }
+    var pending = {}
+    var current = _pendingPreviewUpdates || {}
+    var keys = Object.keys(current)
+    for (var i = 0; i < keys.length; i++) pending[keys[i]] = current[keys[i]]
+    pending[key] = preview
+    _pendingPreviewUpdates = pending
+    previewMergeTimer.restart()
+  }
+
+  function flushPendingPreviews() {
+    previewMergeTimer.stop()
+    var pending = _pendingPreviewUpdates || {}
+    if (Object.keys(pending).length === 0) return
+    _pendingPreviewUpdates = ({})
+    var next = Model.applyPreviewUpdates(items, pending)
+    if (next === items) return
+    items = next
+    scheduleCacheWrite()
+    var updatedKeys = Object.keys(pending)
+    for (var i = 0; i < updatedKeys.length; i++) {
+      var parts = String(updatedKeys[i]).split("/")
+      if (parts.length < 2) continue
+      var match = findItem({ shareId: parts[0], id: parts.slice(1).join("/") })
+      if (match) itemUpdated(match)
+    }
   }
 
   function startNextPreview(urgent) {
-    if (previewProcess.running) return
+    if (previewProcess.running || _previewSessionBlocked) return
     if (copyProcess.running || fetchProcess.running || viewProcess.running) {
       if (previewsEnabled) previewTimer.restart()
       return
@@ -332,11 +390,13 @@ Item {
     while (_previewQueue.length > 0) {
       var next = _previewQueue.shift()
       var current = findItem(next) || next
+      var key = Model.itemKey(current)
+      if (Model.hasFailedPreviewKey(_failedPreviewKeys, key)) continue
       if (!needsPreview(current)) continue
       var uri = Model.passUri(current, "")
       if (uri === "") continue
       _previewItem = current
-      previewing = _urgentPreviewKey !== "" && Model.itemKey(current) === _urgentPreviewKey
+      previewing = _urgentPreviewKey !== "" && key === _urgentPreviewKey
       _previewOutput = ""
       _previewError = ""
       previewProcess.command = [root.passCli, "item", "view", uri, "--output", "json"]
@@ -395,6 +455,13 @@ Item {
     interval: 450
     repeat: false
     onTriggered: root.startNextPreview(false)
+  }
+
+  Timer {
+    id: previewMergeTimer
+    interval: 80
+    repeat: false
+    onTriggered: root.flushPendingPreviews()
   }
 
   Component.onCompleted: ensureCacheDir.running = true
@@ -526,17 +593,25 @@ Item {
     stderr: StdioCollector { id: previewStderr; waitForEnd: true; onStreamFinished: root._previewError = text }
     onExited: function(exitCode) {
       var target = root._previewItem
+      var urgent = target && Model.itemKey(target) === root._urgentPreviewKey
       root._previewItem = null
       root.previewing = false
-      if (target && Model.itemKey(target) === root._urgentPreviewKey)
-        root._urgentPreviewKey = ""
+      if (urgent) root._urgentPreviewKey = ""
       var stdout = String(previewStdout.text || root._previewOutput || "")
+      var stderr = String(previewStderr.text || root._previewError || "")
       if (exitCode === 0 && target) {
         var preview = Model.parseItemPreview(stdout)
         if (preview) {
           root.lastError = ""
-          root.replaceItem(Model.mergeItemPreview(root.findItem(target) || target, preview))
+          root.queuePreviewUpdate(root.findItem(target) || target, preview, urgent)
         }
+      } else if (target) {
+        var kind = Model.classifyError(stderr || stdout, exitCode)
+        if (Model.isSessionBlockingStatus(kind)) {
+          root.blockPreviewSession(kind, stderr || stdout)
+          return
+        }
+        root.markPreviewFailed(Model.itemKey(target))
       }
       if (root.previewsEnabled) previewTimer.restart()
     }
