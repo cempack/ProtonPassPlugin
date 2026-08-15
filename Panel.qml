@@ -290,13 +290,11 @@ Panel {
     if (target) scrollItemIntoView(target)
   }
 
+  readonly property string maskedSecret: "••••••••"
+
   function primaryUrl(item) {
     if (!item || !item.urls || item.urls.length === 0) return ""
     return String(item.urls[0] || "")
-  }
-
-  function maskedSecret() {
-    return "••••••••"
   }
 
   function requestVisiblePreviews() {
@@ -708,7 +706,7 @@ Panel {
                 if (pass.viewing && pass.viewedField === "password" && pass.lastError === "") return "Loading…"
                 if (root.passwordVisible && pass.viewedField === "password" && pass.viewedValue !== "")
                   return pass.viewedValue
-                return root.maskedSecret()
+                return root.maskedSecret
               }
               onCopyRequested: if (root.selectedItem) pass.copyField(root.selectedItem, "password")
               onRevealRequested: {
