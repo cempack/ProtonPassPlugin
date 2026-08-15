@@ -184,6 +184,46 @@ assert.doesNotMatch(
   /flushPendingPreviews[\s\S]*updatedKeys[\s\S]*findItem/,
   "flushPendingPreviews must not rescan findItem per updated key"
 )
+assert.match(
+  passServiceSource,
+  /id:\s*cacheWriteTimer[\s\S]*interval:\s*1500/,
+  "metadata cache writes debounce near 1500ms"
+)
+assert.match(
+  passServiceSource,
+  /_lastCacheText/,
+  "identical cache payloads are tracked to skip no-op writes"
+)
+assert.match(
+  passServiceSource,
+  /text === _lastCacheText|_lastCacheText === text/,
+  "writeCache skips when serialized content is unchanged"
+)
+assert.match(
+  passServiceSource,
+  /onLoaded:[\s\S]*_lastCacheText\s*=/,
+  "FileView loads seed last-cache text to avoid self-reload rewrite loops"
+)
+assert.match(
+  passServiceSource,
+  /atomicWrites:\s*true/,
+  "cache FileView keeps atomicWrites enabled"
+)
+assert.match(
+  passServiceSource,
+  /parsed\.status === "busy"|status === "busy"/,
+  "peer fetch busy results are treated as a quiet no-op"
+)
+assert.doesNotMatch(
+  passServiceSource,
+  /status === "busy"[\s\S]{0,120}lastError\s*=/,
+  "busy fetch results must not set an error banner"
+)
+assert.doesNotMatch(
+  passServiceSource,
+  /--show-secrets/,
+  "PassService must never request full-list secrets"
+)
 
 var suggested = [{ id: "s", shareId: "v", title: "S" }]
 var recent = [{ id: "r", shareId: "v", title: "R" }]

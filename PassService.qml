@@ -66,6 +66,7 @@ Item {
   property bool _openWantsFresh: false
   property double _peerRefreshingAt: 0
   property double _pendingRefreshingAt: 0
+  property string _lastCacheText: ""
   signal copied()
   signal copyFailed(string message)
   signal itemUpdated(var item)
@@ -190,8 +191,11 @@ Item {
     if (!isFinite(started)) started = 0
     _pendingRefreshingAt = started
     var doc = Model.serializeCache(email, fetchedAt, items, started)
+    var text = JSON.stringify(doc) + "\n"
+    if (text === _lastCacheText) return
+    _lastCacheText = text
     _writingCache = true
-    cacheFile.setText(JSON.stringify(doc) + "\n")
+    cacheFile.setText(text)
     Qt.callLater(function() { root._writingCache = false })
   }
 
@@ -446,7 +450,7 @@ Item {
 
   Timer {
     id: cacheWriteTimer
-    interval: 800
+    interval: 1500
     repeat: false
     onTriggered: root.writeCache(fetchProcess.running ? root._peerRefreshingAt : 0)
   }
@@ -486,7 +490,9 @@ Item {
     printErrors: false
     onLoaded: {
       if (root._writingCache) return
-      root.applyCache(text())
+      var raw = text()
+      root._lastCacheText = raw
+      root.applyCache(raw)
     }
     onLoadFailed: {
       root._cacheHydrated = true
@@ -519,6 +525,8 @@ Item {
       var stdout = String(fetchStdout.text || root._fetchOutput || "")
       var stderr = String(fetchStderr.text || root._fetchError || "")
       var parsed = Model.parseFetchResult(stdout)
+      if (parsed.status === "busy")
+        return
       if (exitCode !== 0 && !parsed.ok) {
         var kind = parsed.status && parsed.status !== "error" ? parsed.status : Model.classifyError(stderr || stdout, exitCode)
         if (root.items.length === 0) root.applyStatus(kind, root.statusMessageFor(kind, parsed.message || stderr || stdout))

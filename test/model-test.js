@@ -202,6 +202,18 @@ assert.strictEqual(fetchMissing.ok, false)
 assert.strictEqual(fetchMissing.status, "missing")
 assert.deepStrictEqual(fetchMissing.items, [])
 
+const fetchBusy = Model.parseFetchResult(JSON.stringify({
+  ok: false,
+  status: "busy",
+  message: "",
+  items: []
+}))
+assert.strictEqual(fetchBusy.ok, false)
+assert.strictEqual(fetchBusy.status, "busy")
+assert.deepStrictEqual(fetchBusy.items, [])
+assert.strictEqual(fetchBusy.message, "")
+assert.ok(!JSON.stringify(fetchBusy).includes("password"))
+
 const fetchOk = Model.parseFetchResult(JSON.stringify({
   ok: true,
   email: "me@example.com",
