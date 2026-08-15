@@ -98,7 +98,10 @@ Item {
     status = kind
     lastError = String(message || "")
     refreshing = false
-    if (kind === "ready") _previewSessionBlocked = false
+    if (kind === "ready") {
+      _previewSessionBlocked = false
+      _failedPreviewKeys = Model.clearFailedPreviewKeys()
+    }
   }
 
   function statusMessageFor(kind, stderr) {
@@ -131,6 +134,8 @@ Item {
     if (fetchProcess.running) return
     if (force !== true && !isStale()) return
     if (force !== true && isPeerRefreshing()) return
+    if (force === true)
+      _failedPreviewKeys = Model.clearFailedPreviewKeys()
     copiedMessage = ""
     copiedClearTimer.stop()
     resetViewed()
@@ -328,6 +333,7 @@ Item {
     previewTimer.stop()
     previewMergeTimer.stop()
     _pendingPreviewUpdates = ({})
+    _failedPreviewKeys = Model.clearFailedPreviewKeys()
   }
 
   function markPreviewFailed(key) {
@@ -367,17 +373,12 @@ Item {
     var pending = _pendingPreviewUpdates || {}
     if (Object.keys(pending).length === 0) return
     _pendingPreviewUpdates = ({})
-    var next = Model.applyPreviewUpdates(items, pending)
-    if (next === items) return
-    items = next
+    var batch = Model.applyPreviewBatch(items, pending)
+    if (batch.items === items && batch.updated.length === 0) return
+    items = batch.items
     scheduleCacheWrite()
-    var updatedKeys = Object.keys(pending)
-    for (var i = 0; i < updatedKeys.length; i++) {
-      var parts = String(updatedKeys[i]).split("/")
-      if (parts.length < 2) continue
-      var match = findItem({ shareId: parts[0], id: parts.slice(1).join("/") })
-      if (match) itemUpdated(match)
-    }
+    var updated = batch.updated || []
+    for (var i = 0; i < updated.length; i++) itemUpdated(updated[i])
   }
 
   function startNextPreview(urgent) {

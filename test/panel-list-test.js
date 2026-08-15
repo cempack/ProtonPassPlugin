@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow, cursorItemCount, cursorItemAt }\n"
+    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow, cursorItemCount, cursorItemAt, resolveCursorRow, clearFailedPreviewKeys, applyPreviewBatch }\n"
 )()
 
 const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
@@ -134,11 +134,68 @@ assert.match(
   "locked/unauthenticated preview errors stop preview work via shared classifier"
 )
 
+assert.match(
+  panelSource,
+  /function commitPendingFilter|commitPendingSearch|syncDebouncedFilter/,
+  "pending filterText can be committed synchronously before activation"
+)
+assert.match(
+  panelSource,
+  /function currentRow[\s\S]*commitPending|resolveCursorRow/,
+  "currentRow commits or resolves from live filterText"
+)
+assert.match(
+  panelSource,
+  /Key_Return[\s\S]*commitPending|Key_Enter[\s\S]*commitPending|Key_Return[\s\S]*resolveCursorRow|Key_Enter[\s\S]*resolveCursorRow/,
+  "Enter activates from committed/live query, not stale debounce"
+)
+assert.match(
+  panelSource,
+  /function activateCursor[\s\S]*currentRow|function activateCursor[\s\S]*resolveCursorRow/,
+  "activateCursor uses the same live-query resolution path"
+)
+assert.match(
+  passServiceSource,
+  /clearFailedPreviewKeys/,
+  "failed preview keys are cleared at recoverable boundaries"
+)
+assert.match(
+  passServiceSource,
+  /applyStatus\([\s\S]*clearFailedPreviewKeys|kind === "ready"[\s\S]*clearFailedPreviewKeys/,
+  "successful ready status clears failed preview backoff"
+)
+assert.match(
+  passServiceSource,
+  /function refresh[\s\S]*force === true[\s\S]*clearFailedPreviewKeys|force !== true[\s\S]*clearFailedPreviewKeys/,
+  "forced refresh clears failed preview backoff"
+)
+assert.match(
+  passServiceSource,
+  /function stopPreviews[\s\S]*clearFailedPreviewKeys/,
+  "panel-session stop clears failed preview backoff"
+)
+assert.match(
+  passServiceSource,
+  /applyPreviewBatch/,
+  "preview batch flush emits updates from batch result, not N findItem scans"
+)
+assert.doesNotMatch(
+  passServiceSource,
+  /flushPendingPreviews[\s\S]*updatedKeys[\s\S]*findItem/,
+  "flushPendingPreviews must not rescan findItem per updated key"
+)
+
 var suggested = [{ id: "s", shareId: "v", title: "S" }]
 var recent = [{ id: "r", shareId: "v", title: "R" }]
 var filtered = [{ id: "f", shareId: "v", title: "F" }]
 assert.strictEqual(Model.cursorItemCount(false, suggested, recent, filtered), 2)
 assert.strictEqual(Model.cursorItemAt(false, suggested, recent, filtered, 1).title, "R")
 assert.strictEqual(Model.cursorItemAt(true, suggested, recent, filtered, 0).title, "F")
+assert.strictEqual(
+  Model.resolveCursorRow("f", suggested, recent, [{ id: "r", shareId: "v", title: "R" }, { id: "f", shareId: "v", title: "F" }], 0).title,
+  "F"
+)
+assert.deepStrictEqual(Model.clearFailedPreviewKeys(), { map: {}, order: [] })
+assert.strictEqual(Model.applyPreviewBatch([{ id: "x", shareId: "v", title: "X", username: "" }], { "v/x": { username: "u" } }).updated[0].username, "u")
 
 console.log("ok")

@@ -511,25 +511,39 @@ function cursorItemAt(searching, suggested, recent, filtered, index) {
   return offset < right.length ? right[offset] : null
 }
 
-function applyPreviewUpdates(items, updates) {
+function resolveCursorRow(filterText, suggested, recent, rankedItems, selectedIndex) {
+  var needle = String(filterText || "").trim()
+  var searching = needle !== ""
+  var filtered = searching ? searchItems(rankedItems || [], needle) : []
+  return cursorItemAt(searching, suggested, recent, filtered, selectedIndex)
+}
+
+function applyPreviewBatch(items, updates) {
   var list = items || []
   var map = updates && typeof updates === "object" && !Array.isArray(updates) ? updates : null
-  if (!map) return list
+  if (!map) return { items: list, updated: [] }
   var keys = Object.keys(map)
-  if (keys.length === 0) return list
+  if (keys.length === 0) return { items: list, updated: [] }
   var out = []
+  var updated = []
   var changed = false
   for (var i = 0; i < list.length; i++) {
     var current = list[i]
     var key = itemKey(current)
     if (key !== "/" && Object.prototype.hasOwnProperty.call(map, key)) {
-      out.push(mergeItemPreview(current, map[key]))
+      var merged = mergeItemPreview(current, map[key])
+      out.push(merged)
+      updated.push(merged)
       changed = true
     } else {
       out.push(current)
     }
   }
-  return changed ? out : list
+  return { items: changed ? out : list, updated: updated }
+}
+
+function applyPreviewUpdates(items, updates) {
+  return applyPreviewBatch(items, updates).items
 }
 
 function rememberFailedPreviewKey(store, key, maxSize) {
@@ -563,6 +577,10 @@ function hasFailedPreviewKey(store, key) {
   var value = String(key || "")
   if (value === "") return false
   return store.map[value] === true
+}
+
+function clearFailedPreviewKeys() {
+  return { map: {}, order: [] }
 }
 
 function isSessionBlockingStatus(status) {

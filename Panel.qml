@@ -138,6 +138,12 @@ Panel {
     searchDebounceTimer.restart()
   }
 
+  function commitPendingFilter() {
+    searchDebounceTimer.stop()
+    if (debouncedFilter !== filterText)
+      debouncedFilter = filterText
+  }
+
   function resetSession(keepFilter) {
     viewMode = "list"
     selectedItem = null
@@ -190,7 +196,14 @@ Panel {
   }
 
   function currentRow() {
-    return Model.cursorItemAt(searching, suggested, recent, filtered, selectedIndex)
+    commitPendingFilter()
+    return Model.resolveCursorRow(filterText, suggested, recent, rankedItems, selectedIndex)
+  }
+
+  function activateCursor() {
+    var item = currentRow()
+    if (!item) return
+    copyPasswordAndClose(item)
   }
 
   function openDetail(item) {
@@ -258,12 +271,6 @@ Panel {
     if (!item) return
     closeAfterCopy = true
     pass.copyField(item, "password")
-  }
-
-  function activateCursor() {
-    var item = currentRow()
-    if (!item) return
-    copyPasswordAndClose(item)
   }
 
   function handleCloseRequest() {
@@ -520,7 +527,8 @@ Panel {
                 if (keyCatcher) keyCatcher.forceActiveFocus()
                 event.accepted = true
               } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                var first = Model.cursorItemAt(root.searching, root.suggested, root.recent, root.filtered, 0)
+                root.commitPendingFilter()
+                var first = Model.resolveCursorRow(root.filterText, root.suggested, root.recent, root.rankedItems, 0)
                 if (first) root.copyPasswordAndClose(first)
                 event.accepted = true
               }

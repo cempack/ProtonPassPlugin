@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, applyPreviewUpdates, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, rememberFailedPreviewKey, hasFailedPreviewKey, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
+    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
 )()
 
 function summaryList() {
@@ -403,5 +403,47 @@ assert.strictEqual(Model.isSessionBlockingStatus("unauthenticated"), true)
 assert.strictEqual(Model.isSessionBlockingStatus("migration-required"), true, "classify hook ready for Task 4")
 assert.strictEqual(Model.isSessionBlockingStatus("error"), false)
 assert.strictEqual(Model.isSessionBlockingStatus("missing"), false)
+
+const browseFirst = { id: "browse", shareId: "share", title: "Always First" }
+const searchHit = { id: "hit", shareId: "share", title: "GitHub Token" }
+const rankedForActivation = [browseFirst, searchHit]
+const liveActivation = Model.resolveCursorRow(
+  "git",
+  [],
+  rankedForActivation,
+  rankedForActivation,
+  0
+)
+assert.strictEqual(liveActivation.title, "GitHub Token", "activation must use live query, not stale browse row")
+assert.strictEqual(
+  Model.resolveCursorRow("", [], rankedForActivation, rankedForActivation, 0).title,
+  "Always First",
+  "empty live query stays on browse selection"
+)
+assert.strictEqual(
+  Model.resolveCursorRow("missing-query", [], rankedForActivation, rankedForActivation, 0),
+  null,
+  "live query with no matches yields no activation target"
+)
+
+failedStore = Model.rememberFailedPreviewKey({ map: {}, order: [] }, "s/a", 8)
+failedStore = Model.rememberFailedPreviewKey(failedStore, "s/b", 8)
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), true)
+failedStore = Model.clearFailedPreviewKeys()
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), false)
+assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/b"), false)
+assert.deepStrictEqual(failedStore.order, [])
+
+const batchResult = Model.applyPreviewBatch(baseItems, {
+  "s/a": { username: "alice", password: "secret-batch" },
+  "s/b": { username: "bob", totp_uri: "otpauth://batch" }
+})
+assert.strictEqual(batchResult.items[0].username, "alice")
+assert.strictEqual(batchResult.updated.length, 2, "batch returns touched rows without rescanning")
+assert.strictEqual(batchResult.updated[0].username, "alice")
+assert.strictEqual(batchResult.updated[1].username, "bob")
+assert.ok(!JSON.stringify(batchResult).includes("secret-batch"))
+assert.ok(!JSON.stringify(batchResult).includes("otpauth"))
+assert.deepStrictEqual(Model.applyPreviewBatch(baseItems, {}).updated, [])
 
 console.log("ok")
