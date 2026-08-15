@@ -525,9 +525,10 @@ Item {
       var stdout = String(fetchStdout.text || root._fetchOutput || "")
       var stderr = String(fetchStderr.text || root._fetchError || "")
       var parsed = Model.parseFetchResult(stdout)
-      if (parsed.status === "busy")
+      if (parsed.status === "busy") {
+        root.writeCache(0)
         return
-      if (exitCode !== 0 && !parsed.ok) {
+      }      if (exitCode !== 0 && !parsed.ok) {
         var kind = parsed.status && parsed.status !== "error" ? parsed.status : Model.classifyError(stderr || stdout, exitCode)
         if (root.items.length === 0) root.applyStatus(kind, root.statusMessageFor(kind, parsed.message || stderr || stdout))
         else root.lastError = root.statusMessageFor(kind, parsed.message || stderr || stdout)

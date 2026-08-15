@@ -211,13 +211,23 @@ assert.match(
 )
 assert.match(
   passServiceSource,
-  /parsed\.status === "busy"|status === "busy"/,
-  "peer fetch busy results are treated as a quiet no-op"
+  /parsed\.status === "busy"[\s\S]{0,160}?writeCache\(0\)/,
+  "busy fetch clears this instance refreshingAt via writeCache(0)"
 )
 assert.doesNotMatch(
   passServiceSource,
-  /status === "busy"[\s\S]{0,120}lastError\s*=/,
+  /parsed\.status === "busy"[\s\S]{0,200}?lastError\s*=/,
   "busy fetch results must not set an error banner"
+)
+assert.doesNotMatch(
+  passServiceSource,
+  /parsed\.status === "busy"[\s\S]{0,200}?applyStatus\(/,
+  "busy fetch must preserve existing items/status without applyStatus"
+)
+assert.match(
+  passServiceSource,
+  /cacheDir:[\s\S]*HOME[\s\S]*\/\.cache\/omarchy/,
+  "PassService metadata cache lives under $HOME/.cache/omarchy"
 )
 assert.doesNotMatch(
   passServiceSource,

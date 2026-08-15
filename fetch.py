@@ -23,13 +23,16 @@ def emit(payload: dict) -> None:
 
 
 def cache_dir() -> str:
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    base = xdg if xdg else os.path.join(os.path.expanduser("~"), ".cache")
-    return os.path.join(base, "omarchy")
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, ".cache", "omarchy")
 
 
 def lock_file_path() -> str:
     return os.path.join(cache_dir(), LOCK_NAME)
+
+
+class LockOpenError(Exception):
+    """Fetch lock could not be opened safely."""
 
 
 def cli_env() -> dict[str, str]:
@@ -143,15 +146,47 @@ def list_vault_items(cli: str, vault: dict) -> list[dict]:
 
 
 def try_acquire_lock() -> Optional[IO[str]]:
+    """Acquire a non-blocking exclusive lock.
+
+    Returns an open file object on success, None when another process holds the
+    lock (busy). Raises LockOpenError when the lock path is unsafe.
+    """
     path = lock_file_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = open(path, "a+", encoding="utf-8")
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+
+    flags = os.O_RDWR | os.O_CREAT
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+
+    raw_fd = -1
     try:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        fd.close()
-        return None
-    return fd
+        raw_fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise LockOpenError("Could not open fetch lock") from exc
+
+    try:
+        st = os.fstat(raw_fd)
+        if st.st_uid != os.getuid():
+            raise LockOpenError("Fetch lock owned by another user")
+        os.fchmod(raw_fd, 0o600)
+        fd = os.fdopen(raw_fd, "r+", encoding="utf-8")
+        raw_fd = -1
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fd.close()
+            return None
+        return fd
+    except LockOpenError:
+        if raw_fd >= 0:
+            os.close(raw_fd)
+        raise
+    except Exception:
+        if raw_fd >= 0:
+            os.close(raw_fd)
+        raise
 
 
 def release_lock(fd: Optional[IO[str]]) -> None:
@@ -204,7 +239,11 @@ def scan(cli: str) -> int:
 
 
 def main() -> int:
-    lock_fd = try_acquire_lock()
+    try:
+        lock_fd = try_acquire_lock()
+    except LockOpenError as exc:
+        fail("error", str(exc) or "Could not open fetch lock")
+        return 0
     if lock_fd is None:
         emit({"ok": False, "status": "busy", "message": "", "items": []})
         return 0

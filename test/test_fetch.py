@@ -7,6 +7,7 @@ import fcntl
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,11 +36,18 @@ class FetchTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        self._old_home = os.environ.get("HOME")
         self._old_xdg = os.environ.get("XDG_CACHE_HOME")
-        os.environ["XDG_CACHE_HOME"] = self._tmp.name
-        self.addCleanup(self._restore_xdg)
+        os.environ["HOME"] = self._tmp.name
+        # Ensure XDG does not divert the lock/cache root away from PassService.
+        os.environ["XDG_CACHE_HOME"] = os.path.join(self._tmp.name, "xdg-cache-should-be-ignored")
+        self.addCleanup(self._restore_env)
 
-    def _restore_xdg(self) -> None:
+    def _restore_env(self) -> None:
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
         if self._old_xdg is None:
             os.environ.pop("XDG_CACHE_HOME", None)
         else:
@@ -56,6 +64,15 @@ class FetchTestCase(unittest.TestCase):
 
 
 class LockTests(FetchTestCase):
+    def test_lock_path_matches_home_cache_omarchy(self) -> None:
+        expected = os.path.join(self._tmp.name, ".cache", "omarchy", "proton-pass-fetch.lock")
+        self.assertEqual(fetch.lock_file_path(), expected)
+        self.assertEqual(
+            fetch.cache_dir(),
+            os.path.join(self._tmp.name, ".cache", "omarchy"),
+        )
+        self.assertNotIn("xdg-cache-should-be-ignored", fetch.lock_file_path())
+
     def test_contending_process_returns_busy_without_cli(self) -> None:
         lock_path = fetch.lock_file_path()
         os.makedirs(os.path.dirname(lock_path), exist_ok=True)
@@ -99,11 +116,81 @@ class LockTests(FetchTestCase):
         self.assertEqual(code2, 0)
         self.assertEqual(payload2.get("ok"), True)
 
-        # After release, a fresh exclusive non-blocking lock must succeed.
         lock_path = fetch.lock_file_path()
         with open(lock_path, "a+", encoding="utf-8") as fd:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+
+    def test_lock_file_created_mode_0600(self) -> None:
+        info = subprocess.CompletedProcess(
+            ["pass-cli", "info"], 0, '{"email":"a@b.c"}', ""
+        )
+        vaults = subprocess.CompletedProcess(
+            ["pass-cli", "vault", "list"], 0, "[]", ""
+        )
+
+        def fake_run(cli: str, args: list[str], timeout=None):
+            if args[:1] == ["info"]:
+                return info
+            if args[:2] == ["vault", "list"]:
+                return vaults
+            raise AssertionError(f"unexpected args: {args}")
+
+        with mock.patch.object(fetch, "run_cli", side_effect=fake_run):
+            with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+                code, payload = self._capture_main()
+
+        self.assertEqual(code, 0)
+        self.assertTrue(payload.get("ok"))
+        mode = stat.S_IMODE(os.stat(fetch.lock_file_path()).st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def test_wrong_owner_fails_safely_without_cli(self) -> None:
+        lock_path = fetch.lock_file_path()
+        os.makedirs(os.path.dirname(lock_path), mode=0o700, exist_ok=True)
+        with open(lock_path, "w", encoding="utf-8"):
+            pass
+
+        real_fstat = os.fstat
+
+        def fake_fstat(fd):
+            st = real_fstat(fd)
+            return os.stat_result(
+                (st.st_mode, st.st_ino, st.st_dev, st.st_nlink, st.st_uid + 1, st.st_gid,
+                 st.st_size, st.st_atime, st.st_mtime, st.st_ctime)
+            )
+
+        with mock.patch.object(os, "fstat", side_effect=fake_fstat):
+            with mock.patch.object(fetch, "run_cli") as run_cli:
+                with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+                    code, payload = self._capture_main()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload.get("ok"), False)
+        self.assertEqual(payload.get("status"), "error")
+        self.assertNotEqual(payload.get("status"), "busy")
+        self.assertEqual(payload.get("items"), [])
+        run_cli.assert_not_called()
+
+    def test_symlink_lock_path_fails_safely(self) -> None:
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("O_NOFOLLOW unavailable")
+        lock_path = fetch.lock_file_path()
+        os.makedirs(os.path.dirname(lock_path), mode=0o700, exist_ok=True)
+        target = os.path.join(self._tmp.name, "evil-target")
+        with open(target, "w", encoding="utf-8") as fd:
+            fd.write("x")
+        os.symlink(target, lock_path)
+
+        with mock.patch.object(fetch, "run_cli") as run_cli:
+            with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+                code, payload = self._capture_main()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload.get("ok"), False)
+        self.assertEqual(payload.get("status"), "error")
+        self.assertEqual(payload.get("items"), [])
+        run_cli.assert_not_called()
 
 
 class TimeoutTests(FetchTestCase):
