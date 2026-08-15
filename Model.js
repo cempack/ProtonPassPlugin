@@ -722,6 +722,21 @@ function visiblePreviewWindow(searching, suggested, list, viewport) {
   return out
 }
 
+function createLoginUrls(data) {
+  var urls = []
+  if (!data || typeof data !== "object") return urls
+  if (Array.isArray(data.urls)) {
+    for (var i = 0; i < data.urls.length; i++) {
+      var candidate = String(data.urls[i] || "").trim()
+      if (candidate !== "") urls.push(candidate)
+    }
+  } else if (data.url) {
+    var url = String(data.url || "").trim()
+    if (url !== "") urls.push(url)
+  }
+  return urls
+}
+
 function buildCreateLoginCommand(fields) {
   return buildCreateLoginRequest(fields).args
 }
@@ -734,33 +749,25 @@ function buildCreateLoginRequest(fields) {
   } else if (data.vaultName) {
     args.push("--vault-name", String(data.vaultName))
   }
+  args.push("--from-template", "-")
   var password = data.password === undefined || data.password === null ? "" : String(data.password)
-  if (data.generatePassword !== true && password !== "") {
-    var urls = []
-    if (Array.isArray(data.urls)) {
-      for (var i = 0; i < data.urls.length; i++) {
-        var candidate = String(data.urls[i] || "").trim()
-        if (candidate !== "") urls.push(candidate)
-      }
-    } else if (data.url) {
-      urls.push(String(data.url))
-    }
-    args.push("--from-template", "-")
+  var needsPasswordGeneration = data.generatePassword === true || password === ""
+  if (needsPasswordGeneration) {
     return {
       args: args,
-      stdin: JSON.stringify({
-        title: String(data.title || ""),
-        username: String(data.username || ""),
-        email: String(data.email || ""),
-        password: password,
-        urls: urls
-      }) + "\n"
+      stdin: "",
+      needsPasswordGeneration: true
     }
   }
-  if (data.title) args.push("--title", String(data.title))
-  if (data.username) args.push("--username", String(data.username))
-  if (data.email) args.push("--email", String(data.email))
-  if (data.generatePassword === true) args.push("--generate-password")
-  if (data.url) args.push("--url", String(data.url))
-  return { args: args, stdin: "" }
+  return {
+    args: args,
+    stdin: JSON.stringify({
+      title: String(data.title || ""),
+      username: String(data.username || ""),
+      email: String(data.email || ""),
+      password: password,
+      urls: createLoginUrls(data)
+    }) + "\n",
+    needsPasswordGeneration: false
+  }
 }

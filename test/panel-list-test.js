@@ -226,6 +226,11 @@ assert.doesNotMatch(
 )
 assert.match(
   passServiceSource,
+  /mkdir",\s*"-p",\s*"-m",\s*"0700"/,
+  "cache directory is created owner-only"
+)
+assert.match(
+  passServiceSource,
   /cacheDir:[\s\S]*HOME[\s\S]*\/\.cache\/omarchy/,
   "PassService metadata cache lives under $HOME/.cache/omarchy"
 )

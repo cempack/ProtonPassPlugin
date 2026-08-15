@@ -28,13 +28,21 @@ const copyProcessSource = processSection("copyProcess", "viewProcess")
 const viewProcessSource = processSection("viewProcess", "previewProcess")
 const previewProcessSource = processSection("previewProcess", "createProcess")
 const createProcessSource = processSection("createProcess", "generateProcess")
-const generateProcessSource = processSection("generateProcess", null)
+const generateProcessSource = processSection("generateProcess", "clipboardProcess")
+const clipboardProcessSource = processSection("clipboardProcess", null)
 
 assert.doesNotMatch(
   serviceSource,
-  /createProcess\.command\s*=[^\n]*password|--password/,
-  "custom passwords must never enter the create process argv"
+  /createProcess\.command\s*=[^\n]*password|--password|--generate-password|--title|--username|--email|--url/,
+  "login-creation fields must never enter the create process argv"
 )
+assert.doesNotMatch(modelSource, /--generate-password|--title|--username|--email|--url/)
+assert.doesNotMatch(
+  serviceSource,
+  /execDetached\(\s*\[["']bash["']/,
+  "clipboard copies must not put secrets or usernames in bash -c argv"
+)
+assert.doesNotMatch(allRuntimeSource, /Util\.shellQuote/)
 assert.match(serviceSource, /stdinEnabled:\s*(?:true|false)/, "create process declares stdin lifecycle")
 assert.match(serviceSource, /onStarted:[\s\S]*?write\(/, "serialized login template is written after process start")
 assert.match(
@@ -54,7 +62,7 @@ assert.match(
 )
 assert.doesNotMatch(allRuntimeSource, /console\.(?:log|warn|error)[^\n]*(?:password|_createStdinPayload)/i)
 
-for (const name of ["copy", "view", "preview", "create", "generate"]) {
+for (const name of ["copy", "view", "preview", "create", "generate", "clipboard"]) {
   assert.match(serviceSource, new RegExp("id:\\s*" + name + "Watchdog\\b"), name + " process has a finite watchdog")
   assert.match(
     serviceSource,
@@ -102,7 +110,8 @@ for (const [name, section, busyFlag] of [
   ["view", viewProcessSource, "viewing"],
   ["preview", previewProcessSource, "previewing"],
   ["create", createProcessSource, "creating"],
-  ["generate", generateProcessSource, "generatingPassword"]
+  ["generate", generateProcessSource, "generatingPassword"],
+  ["clipboard", clipboardProcessSource, "_clipboardActive"]
 ]) {
   assert.match(section, /onRunningChanged:[\s\S]*Qt\.callLater/, name + " handles failed launch without exited")
   assert.match(section, new RegExp(busyFlag + "\\s*=\\s*false"), name + " failed launch clears its busy flag")
@@ -178,7 +187,28 @@ assert.match(panelSource, /createSubmitAttempted[\s\S]*draftTitle/, "empty title
 assert.match(
   panelSource,
   /generatePassword:\s*(?:String\()?draftPassword(?:\s*\|\|\s*"")?\)?\s*===\s*""/,
-  "only a truly blank password selects argv-based generation"
+  "only a truly blank password requests generated-password creation"
+)
+assert.match(
+  serviceSource,
+  /needsPasswordGeneration[\s\S]*_pendingCreateFields[\s\S]*password", "generate", "random"/,
+  "blank-password creation generates first, then creates from a stdin template"
+)
+assert.match(
+  serviceSource,
+  /pendingCreate[\s\S]*startCreateProcess\(/,
+  "generated-password creation continues through stdin template launch, not argv flags"
+)
+assert.match(
+  serviceSource,
+  /function copyText[\s\S]*stdinEnabled\s*=\s*true[\s\S]*wl-copy/,
+  "username and URL copies send clipboard text over wl-copy stdin"
+)
+assert.match(clipboardProcessSource, /onStarted:[\s\S]*write\(/, "clipboard text is written after wl-copy starts")
+assert.match(
+  clipboardProcessSource,
+  /onStarted:[\s\S]*stdinEnabled\s*=\s*false/,
+  "clipboard stdin is closed after the write so wl-copy receives EOF"
 )
 assert.doesNotMatch(panelSource, /tooltipText:\s*"Save"/, "header does not duplicate the full-width primary action")
 assert.match(
@@ -224,7 +254,7 @@ assert.match(panelSource, /function closeCreate[\s\S]*resetDraft\(\)/, "create c
 assert.match(panelSource, /function onCreated[\s\S]*closeCreate\(\)/, "successful create clears draft secrets")
 assert.match(
   panelSource,
-  /function onPasswordGenerated[\s\S]*if\s*\(!root\.opened\s*\|\|\s*!root\.showCreate\)\s*return[\s\S]*draftPassword\s*=/,
+  /function onPasswordGenerated[\s\S]*if\s*\(!root\.opened\s*\|\|\s*!root\.showCreate(?:\s*\|\|\s*pass\.creating)?\)\s*return[\s\S]*draftPassword\s*=/,
   "a generated password cannot repopulate draft state after cancel or panel close"
 )
 

@@ -407,7 +407,7 @@ Panel {
       root.closeCreate()
     }
     function onPasswordGenerated(value) {
-      if (!root.opened || !root.showCreate) return
+      if (!root.opened || !root.showCreate || pass.creating) return
       root.draftPassword = String(value || "")
       if (passwordField) passwordField.text = root.draftPassword
     }

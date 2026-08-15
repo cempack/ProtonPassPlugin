@@ -396,6 +396,7 @@ assert.deepStrictEqual(customRequest.args, [
 ])
 assert.ok(!customRequest.args.includes("--password"))
 assert.ok(!customRequest.args.some(function (arg) { return String(arg).includes(distinctivePassword) }))
+assert.strictEqual(customRequest.needsPasswordGeneration, false)
 assert.deepStrictEqual(JSON.parse(customRequest.stdin), {
   title: "GitHub",
   username: "elli",
@@ -412,17 +413,23 @@ const generated = Model.buildCreateLoginCommand({
 assert.deepStrictEqual(generated, [
   "item", "create", "login",
   "--vault-name", "Personal",
-  "--title", "New",
-  "--generate-password"
+  "--from-template", "-"
 ])
 assert.ok(!generated.includes("--password"))
+assert.ok(!generated.includes("--generate-password"))
+assert.ok(!generated.includes("--title"))
+assert.ok(!generated.includes("New"))
 const generatedRequest = Model.buildCreateLoginRequest({
   vaultName: "Personal",
   title: "New",
+  username: "alice",
   generatePassword: true
 })
 assert.deepStrictEqual(generatedRequest.args, generated)
 assert.strictEqual(generatedRequest.stdin, "")
+assert.strictEqual(generatedRequest.needsPasswordGeneration, true)
+assert.ok(!generatedRequest.args.includes("alice"))
+assert.ok(!generatedRequest.args.includes("--username"))
 
 assert.strictEqual(typeof Model.mergePartialItemLists, "function")
 const partialMerged = Model.mergePartialItemLists(

@@ -134,7 +134,7 @@ test("all process paths latch session-blocking failures centrally", function () 
     ["view", processSection("viewProcess", "previewProcess")],
     ["preview", processSection("previewProcess", "createProcess")],
     ["create", processSection("createProcess", "generateProcess")],
-    ["generate", processSection("generateProcess", null)]
+    ["generate", processSection("generateProcess", "clipboardProcess")]
   ]
   for (const entry of sections) {
     assert.match(
@@ -161,7 +161,7 @@ test("successful malformed preview JSON backs off and advances", function () {
 })
 
 test("empty successful generation surfaces a sanitized error and clears state", function () {
-  const generate = processSection("generateProcess", null)
+  const generate = processSection("generateProcess", "clipboardProcess")
   assert.match(generate, /root\.generatingPassword\s*=\s*false/)
   assert.match(generate, /root\._generateOutput\s*=\s*""/)
   assert.match(generate, /root\._generateError\s*=\s*""/)

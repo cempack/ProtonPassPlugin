@@ -33,7 +33,7 @@ Item {
     if (minutes > 120) minutes = 120
     return minutes * 60 * 1000
   }
-  readonly property bool busy: fetchProcess.running || copyProcess.running || viewProcess.running || previewProcess.running || createProcess.running || generateProcess.running
+  readonly property bool busy: fetchProcess.running || copyProcess.running || clipboardProcess.running || viewProcess.running || previewProcess.running || createProcess.running || generateProcess.running
   readonly property string passCli: {
     var value = String(setting("passCliPath", "pass-cli") || "pass-cli").trim()
     return value !== "" ? value : "pass-cli"
@@ -65,9 +65,14 @@ Item {
   property string _previewError: ""
   property string _createError: ""
   property string _createStdinPayload: ""
+  property var _pendingCreateFields: null
+  property string _clipboardPayload: ""
+  property string _clipboardError: ""
+  property bool _clipboardActive: false
   property string _generateOutput: ""
   property string _generateError: ""
   property bool _copyTimedOut: false
+  property bool _clipboardTimedOut: false
   property bool _viewTimedOut: false
   property bool _previewTimedOut: false
   property bool _createTimedOut: false
@@ -174,6 +179,7 @@ Item {
     if (!createProcess.running) return
     _createTimedOut = true
     _createStdinPayload = ""
+    _pendingCreateFields = null
     createProcess.stdinEnabled = false
     creating = false
     _createError = ""
@@ -184,13 +190,35 @@ Item {
     createProcess.running = false
   }
 
+  function handleClipboardTimeout() {
+    if (!clipboardProcess.running) return
+    _clipboardTimedOut = true
+    _clipboardActive = false
+    _clipboardPayload = ""
+    clipboardProcess.stdinEnabled = false
+    _clipboardError = ""
+    copiedMessage = ""
+    var message = timeoutMessage("Copy")
+    lastError = message
+    copyFailed(message)
+    clipboardProcess.signal(9)
+    clipboardProcess.running = false
+  }
+
   function handleGenerateTimeout() {
     if (!generateProcess.running) return
     _generateTimedOut = true
+    var pendingCreate = _pendingCreateFields !== null
+    _pendingCreateFields = null
     generatingPassword = false
     _generateOutput = ""
     _generateError = ""
-    lastError = timeoutMessage("Password generation")
+    var message = timeoutMessage(pendingCreate ? "Login creation" : "Password generation")
+    lastError = message
+    if (pendingCreate) {
+      creating = false
+      createFailed(message)
+    }
     generateProcess.signal(9)
     generateProcess.running = false
   }
@@ -226,7 +254,7 @@ Item {
   }
 
   function handleCreateLaunchFailure() {
-    if (createProcess.running || !creating) return
+    if (createProcess.running || !creating || _pendingCreateFields !== null) return
     createWatchdog.stop()
     _createStdinPayload = ""
     createProcess.stdinEnabled = false
@@ -236,13 +264,31 @@ Item {
     createFailed(lastError)
   }
 
+  function handleClipboardLaunchFailure() {
+    if (clipboardProcess.running || !_clipboardActive) return
+    clipboardWatchdog.stop()
+    _clipboardActive = false
+    _clipboardPayload = ""
+    clipboardProcess.stdinEnabled = false
+    _clipboardError = ""
+    copiedMessage = ""
+    lastError = launchFailureMessage()
+    copyFailed(lastError)
+  }
+
   function handleGenerateLaunchFailure() {
     if (generateProcess.running || !generatingPassword) return
     generateWatchdog.stop()
+    var pendingCreate = _pendingCreateFields !== null
+    _pendingCreateFields = null
     generatingPassword = false
     _generateOutput = ""
     _generateError = ""
     lastError = launchFailureMessage()
+    if (pendingCreate) {
+      creating = false
+      createFailed(lastError)
+    }
   }
 
   function applyStatus(kind, message) {
@@ -366,7 +412,7 @@ Item {
   }
 
   function createLogin(fields) {
-    if (createProcess.running) return
+    if (createProcess.running || generateProcess.running) return
     var data = fields && typeof fields === "object" ? fields : {}
     var title = String(data.title || "").trim()
     if (title === "") {
@@ -389,6 +435,29 @@ Item {
       generatePassword: data.generatePassword === true || password === "",
       url: String(data.url || "").trim()
     })
+    if (request.needsPasswordGeneration) {
+      _pendingCreateFields = {
+        shareId: data.shareId,
+        vaultName: data.vaultName,
+        title: title,
+        username: String(data.username || "").trim(),
+        email: String(data.email || "").trim(),
+        url: String(data.url || "").trim()
+      }
+      generatingPassword = true
+      _generateOutput = ""
+      _generateError = ""
+      generateProcess.command = [root.passCli, "password", "generate", "random", "--length", "20", "--uppercase", "true", "--symbols", "true"]
+      _generateTimedOut = false
+      generateWatchdog.restart()
+      generateProcess.running = true
+      return
+    }
+    startCreateProcess(request)
+  }
+
+  function startCreateProcess(request) {
+    _pendingCreateFields = null
     _createStdinPayload = request.stdin
     createProcess.stdinEnabled = _createStdinPayload !== ""
     createProcess.command = [root.passCli].concat(request.args)
@@ -398,7 +467,7 @@ Item {
   }
 
   function generatePassword() {
-    if (generateProcess.running) return
+    if (generateProcess.running || creating) return
     generatingPassword = true
     _generateOutput = ""
     _generateError = ""
@@ -421,10 +490,18 @@ Item {
 
   function copyText(value) {
     var text = String(value || "")
-    if (text === "") return
+    if (text === "" || clipboardProcess.running) return
     lastError = ""
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
-    showCopied()
+    copiedMessage = ""
+    copiedClearTimer.stop()
+    _clipboardError = ""
+    _clipboardPayload = text
+    _clipboardActive = true
+    clipboardProcess.stdinEnabled = true
+    clipboardProcess.command = ["timeout", "--signal=TERM", "--kill-after=2s", "30s", "wl-copy"]
+    _clipboardTimedOut = false
+    clipboardWatchdog.restart()
+    clipboardProcess.running = true
   }
 
   function copyField(item, field) {
@@ -688,6 +765,13 @@ Item {
   }
 
   Timer {
+    id: clipboardWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleClipboardTimeout()
+  }
+
+  Timer {
     id: generateWatchdog
     interval: root.directCliTimeoutMs
     repeat: false
@@ -699,7 +783,7 @@ Item {
   Process {
     id: ensureCacheDir
     running: false
-    command: ["mkdir", "-p", root.cacheDir]
+    command: ["mkdir", "-p", "-m", "0700", root.cacheDir]
     onExited: {
       root._dirReady = true
       cacheFile.reload()
@@ -968,6 +1052,7 @@ Item {
         return
       }
       root.creating = false
+      root._pendingCreateFields = null
       if (exitCode === 0) {
         root.lastError = ""
         root.created()
@@ -1010,6 +1095,34 @@ Item {
       var stderr = String(generateStderr.text || root._generateError || "")
       root._generateOutput = ""
       root._generateError = ""
+      var pendingCreate = root._pendingCreateFields
+      if (pendingCreate) {
+        root._pendingCreateFields = null
+        if (exitCode === 0 && stdout !== "") {
+          var followUp = Model.buildCreateLoginRequest({
+            shareId: pendingCreate.shareId,
+            vaultName: pendingCreate.vaultName,
+            title: pendingCreate.title,
+            username: pendingCreate.username,
+            email: pendingCreate.email,
+            password: stdout,
+            generatePassword: false,
+            url: pendingCreate.url
+          })
+          root.startCreateProcess(followUp)
+          return
+        }
+        root.creating = false
+        var pendingKind = Model.classifyError(stderr || stdout, exitCode)
+        var pendingMessage = exitCode === 0
+          ? "Password generation returned no password."
+          : root.statusMessageFor(pendingKind, stderr || stdout)
+        if (exitCode !== 0)
+          root.latchSessionBlockingFailure(pendingKind, stderr || stdout)
+        if (root.lastError === "") root.lastError = pendingMessage
+        root.createFailed(pendingMessage)
+        return
+      }
       if (exitCode === 0) {
         if (stdout !== "") {
           root.lastError = ""
@@ -1022,6 +1135,52 @@ Item {
         if (!root.latchSessionBlockingFailure(kind, stderr || stdout))
           root.lastError = root.statusMessageFor(kind, stderr || stdout)
       }
+    }
+  }
+
+  Process {
+    id: clipboardProcess
+    running: false
+    command: []
+    stdinEnabled: false
+    stderr: StdioCollector { id: clipboardStderr; waitForEnd: true; onStreamFinished: root._clipboardError = text }
+    onStarted: {
+      var payload = root._clipboardPayload
+      if (payload !== "") write(payload)
+      root._clipboardPayload = ""
+      stdinEnabled = false
+    }
+    onRunningChanged: {
+      if (!running) {
+        root._clipboardPayload = ""
+        stdinEnabled = false
+        Qt.callLater(function() { root.handleClipboardLaunchFailure() })
+      }
+    }
+    onExited: function(exitCode) {
+      clipboardWatchdog.stop()
+      root._clipboardPayload = ""
+      stdinEnabled = false
+      if (root._clipboardTimedOut) {
+        root._clipboardTimedOut = false
+        root._clipboardActive = false
+        root._clipboardError = ""
+        return
+      }
+      root._clipboardActive = false
+      if (exitCode === 0) {
+        root.showCopied()
+        root.lastError = ""
+      } else {
+        var stderr = String(clipboardStderr.text || root._clipboardError || "")
+        var message = (exitCode === 124 || exitCode === 137)
+          ? root.timeoutMessage("Copy")
+          : (root.elideStatus(stderr) || root.launchFailureMessage())
+        root.copiedMessage = ""
+        root.lastError = message
+        root.copyFailed(message)
+      }
+      root._clipboardError = ""
     }
   }
 }
