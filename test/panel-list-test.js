@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+"use strict"
+
+const assert = require("assert")
+const fs = require("fs")
+const path = require("path")
+
+const Model = new Function(
+  fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
+    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow }\n"
+)()
+
+const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+
+function makeItems(count) {
+  var out = []
+  for (var i = 0; i < count; i++) {
+    out.push({
+      id: "item-" + i,
+      shareId: "share-1",
+      title: "Login " + i,
+      lastUsedAt: count - i
+    })
+  }
+  return out
+}
+
+assert.strictEqual(Model.listRowCursorIndex(true, 2, 5), 5, "search mode uses delegate index")
+assert.strictEqual(Model.listRowCursorIndex(false, 2, 5), 7, "browse mode offsets suggested rows")
+
+assert.strictEqual(Model.listScrollTargetIndex(false, 0, 3), -1, "suggested row scrolls to beginning")
+assert.strictEqual(Model.listScrollTargetIndex(false, 2, 3), -1, "last suggested row still scrolls to beginning")
+assert.strictEqual(Model.listScrollTargetIndex(false, 3, 3), 0, "first recent row maps to delegate 0")
+assert.strictEqual(Model.listScrollTargetIndex(false, 8, 3), 5, "recent row maps after suggested offset")
+assert.strictEqual(Model.listScrollTargetIndex(true, 4, 3), 4, "search mode maps directly")
+
+var allItems = makeItems(563)
+var suggested = allItems.slice(0, 2)
+var ranked = Model.recentlyUsed(allItems)
+var recent = Model.withoutItems(ranked, suggested)
+assert.strictEqual(recent.length, 561, "full login list stays available after suggested removal")
+assert.strictEqual(Model.recentlyUsed(allItems).length, 563, "recentlyUsed without limit keeps every login")
+
+var previewList = makeItems(40)
+var preview = Model.visiblePreviewWindow(false, suggested, previewList, {
+  contentY: 440,
+  height: 220,
+  rowHeight: 44,
+  indexAtTop: 10,
+  indexAtBottom: 14
+})
+assert.strictEqual(preview.length, 7, "preview window includes suggested plus visible recent rows")
+assert.strictEqual(preview[0].title, "Login 0")
+assert.strictEqual(preview[preview.length - 1].title, "Login 14")
+assert.ok(preview.every(function (item) { return item.title.indexOf("Login ") === 0 }))
+
+var emptySearchPreview = Model.visiblePreviewWindow(true, suggested, [], {})
+assert.deepStrictEqual(emptySearchPreview, [], "empty search preview window stays empty")
+
+var capped = Model.visiblePreviewWindow(false, [], makeItems(100), {
+  contentY: 0,
+  height: 100,
+  rowHeight: 44,
+  indexAtTop: 0,
+  indexAtBottom: 50
+})
+assert.ok(capped.length <= 12, "preview window stays bounded when many rows are visible")
+
+assert.match(panelSource, /reuseItems:\s*true/, "ListView delegate reuse stays enabled")
+assert.match(panelSource, /onHasCursorChanged:.*scrollCursorIntoView/, "keyboard scroll stays centralized on cursor rows")
+assert.match(
+  panelSource,
+  /footer:[\s\S]*visible:\s*root\.searching && root\.filtered\.length === 0/,
+  "empty search state keeps a footer message"
+)
+assert.doesNotMatch(panelSource, /recentlyUsed\([^)]*,\s*maxRecent/, "list must not cap recent rows with maxRecent")
+assert.doesNotMatch(panelSource, /recentlyUsed\([^)]*,\s*root\.maxRecent/, "list must not cap recent rows with maxRecent")
+
+console.log("ok")

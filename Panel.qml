@@ -34,13 +34,6 @@ Panel {
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property int maxRecent: {
-    var n = parseInt(String(setting("maxRecent", 8)), 10)
-    if (!isFinite(n) || n < 1) n = 8
-    if (n > 30) n = 30
-    return n
-  }
-
   readonly property var toplevel: ToplevelManager.activeToplevel
   readonly property string activeAppId: toplevel ? String(toplevel.appId || "") : ""
   readonly property string activeTitle: toplevel ? String(toplevel.title || "") : ""
@@ -268,12 +261,9 @@ Panel {
 
   function scrollCursorIntoView() {
     if (!listView) return
-    if (!root.searching && selectedIndex < root.suggested.length) {
-      listView.positionViewAtBeginning()
-      return
-    }
-    var idx = root.searching ? selectedIndex : selectedIndex - root.suggested.length
-    if (idx >= 0) listView.positionViewAtIndex(idx, ListView.Contain)
+    var target = Model.listScrollTargetIndex(root.searching, selectedIndex, root.suggested.length)
+    if (target < 0) listView.positionViewAtBeginning()
+    else listView.positionViewAtIndex(target, ListView.Contain)
   }
 
   readonly property string maskedSecret: "••••••••"
@@ -289,26 +279,16 @@ Panel {
   }
 
   function visiblePreviewWindow() {
-    var out = []
-    if (!root.searching) {
-      var suggestedItems = root.suggested || []
-      for (var i = 0; i < suggestedItems.length; i++) out.push(suggestedItems[i])
-    }
     var list = root.searching ? (root.filtered || []) : (root.recent || [])
-    if (list.length === 0) return out
-    var start = 0
-    var last = Math.min(list.length - 1, 11)
+    var viewport = {}
     if (listView && listView.height > 0) {
-      var top = listView.indexAt(1, listView.contentY + 1)
-      var bottom = listView.indexAt(1, listView.contentY + listView.height - 1)
-      if (top < 0) top = Math.floor(Math.max(0, listView.contentY) / Math.max(1, Style.space(44)))
-      if (bottom < top) bottom = top + 11
-      start = Math.max(0, top)
-      last = Math.min(list.length - 1, bottom)
-      if (last - start > 11) last = start + 11
+      viewport.contentY = listView.contentY
+      viewport.height = listView.height
+      viewport.rowHeight = Style.space(44)
+      viewport.indexAtTop = listView.indexAt(1, listView.contentY + 1)
+      viewport.indexAtBottom = listView.indexAt(1, listView.contentY + listView.height - 1)
     }
-    for (var j = start; j <= last; j++) out.push(list[j])
-    return out
+    return Model.visiblePreviewWindow(root.searching, root.suggested, list, viewport)
   }
 
   function previewHovered(item) {
@@ -608,7 +588,7 @@ Panel {
               required property int index
               width: listView.width
               item: modelData
-              cursorIndex: root.searching ? index : root.suggested.length + index
+              cursorIndex: Model.listRowCursorIndex(root.searching, root.suggested.length, index)
             }
 
             footer: Text {
@@ -818,6 +798,7 @@ Panel {
     foreground: root.foreground
     dim: root.dim
     fontFamily: root.fontFamily
+    onHasCursorChanged: if (hasCursor && root.cursorActive) root.scrollCursorIntoView()
     onHovered: {
       root.cursorActive = true
       root.selectedIndex = cursorIndex

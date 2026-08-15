@@ -482,6 +482,42 @@ function vaultsFromItems(items) {
   return out
 }
 
+function listRowCursorIndex(searching, suggestedLength, delegateIndex) {
+  return searching ? delegateIndex : Number(suggestedLength || 0) + delegateIndex
+}
+
+function listScrollTargetIndex(searching, selectedIndex, suggestedLength) {
+  if (!searching && selectedIndex < suggestedLength) return -1
+  var idx = searching ? selectedIndex : selectedIndex - suggestedLength
+  return idx >= 0 ? idx : -1
+}
+
+function visiblePreviewWindow(searching, suggested, list, viewport) {
+  var out = []
+  if (!searching) {
+    var suggestedItems = suggested || []
+    for (var i = 0; i < suggestedItems.length; i++) out.push(suggestedItems[i])
+  }
+  var rows = list || []
+  if (rows.length === 0) return out
+  var vp = viewport && typeof viewport === "object" ? viewport : {}
+  var start = 0
+  var last = Math.min(rows.length - 1, 11)
+  if (Number(vp.height) > 0) {
+    var top = Number(vp.indexAtTop)
+    var bottom = Number(vp.indexAtBottom)
+    if (!isFinite(top) || top < 0) {
+      top = Math.floor(Math.max(0, Number(vp.contentY) || 0) / Math.max(1, Number(vp.rowHeight) || 44))
+    }
+    if (!isFinite(bottom) || bottom < top) bottom = top + 11
+    start = Math.max(0, top)
+    last = Math.min(rows.length - 1, bottom)
+    if (last - start > 11) last = start + 11
+  }
+  for (var j = start; j <= last; j++) out.push(rows[j])
+  return out
+}
+
 function buildCreateLoginCommand(fields) {
   var args = ["item", "create", "login"]
   var data = fields && typeof fields === "object" ? fields : {}
