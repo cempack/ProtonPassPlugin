@@ -16,12 +16,18 @@ def emit(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def cli_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PROTON_PASS_LINUX_KEYRING"] = "dbus"
+    return env
+
+
 def run_cli(cli: str, args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [cli, *args],
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env=cli_env(),
     )
 
 

@@ -36,6 +36,9 @@ Item {
     var value = String(setting("passCliPath", "pass-cli") || "pass-cli").trim()
     return value !== "" ? value : "pass-cli"
   }
+  readonly property var passCliEnvironment: ({
+    "PROTON_PASS_LINUX_KEYRING": "dbus"
+  })
   readonly property string cacheDir: Quickshell.env("HOME") + "/.cache/omarchy"
   readonly property string cachePath: cacheDir + "/proton-pass.json"
   readonly property int peerLockMs: 90000
@@ -439,6 +442,7 @@ Item {
     id: fetchProcess
     running: false
     command: []
+    environment: root.passCliEnvironment
     stdout: StdioCollector { id: fetchStdout; waitForEnd: true; onStreamFinished: root._fetchOutput = text }
     stderr: StdioCollector { id: fetchStderr; waitForEnd: true; onStreamFinished: root._fetchError = text }
     onExited: function(exitCode) {
@@ -473,6 +477,7 @@ Item {
     id: copyProcess
     running: false
     command: []
+    environment: root.passCliEnvironment
     stderr: StdioCollector { id: copyStderr; waitForEnd: true; onStreamFinished: root._copyError = text }
     onExited: function(exitCode) {
       root.copying = false
@@ -494,6 +499,7 @@ Item {
     id: viewProcess
     running: false
     command: []
+    environment: root.passCliEnvironment
     stdout: StdioCollector { id: viewStdout; waitForEnd: true; onStreamFinished: root._viewOutput = text }
     stderr: StdioCollector { id: viewStderr; waitForEnd: true; onStreamFinished: root._viewError = text }
     onExited: function(exitCode) {
@@ -515,6 +521,7 @@ Item {
     id: previewProcess
     running: false
     command: []
+    environment: root.passCliEnvironment
     stdout: StdioCollector { id: previewStdout; waitForEnd: true; onStreamFinished: root._previewOutput = text }
     stderr: StdioCollector { id: previewStderr; waitForEnd: true; onStreamFinished: root._previewError = text }
     onExited: function(exitCode) {
@@ -539,6 +546,7 @@ Item {
     id: createProcess
     running: false
     command: []
+    environment: root.passCliEnvironment
     stderr: StdioCollector { id: createStderr; waitForEnd: true; onStreamFinished: root._createError = text }
     onExited: function(exitCode) {
       root.creating = false
@@ -560,6 +568,7 @@ Item {
     id: generateProcess
     running: false
     command: []
+    environment: root.passCliEnvironment
     stdout: StdioCollector { id: generateStdout; waitForEnd: true; onStreamFinished: root._generateOutput = text }
     onExited: function(exitCode) {
       root.generatingPassword = false
