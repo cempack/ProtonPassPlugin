@@ -18,6 +18,7 @@ Item {
   property bool generatingPassword: false
   property string status: "idle"  // idle | loading | ready | missing | unauthenticated | locked | migration-required | error
   property string lastError: ""
+  property string fetchWarning: ""
   property string email: ""
   property var items: []
   property string copiedMessage: ""
@@ -42,6 +43,7 @@ Item {
   readonly property string cacheDir: Quickshell.env("HOME") + "/.cache/omarchy"
   readonly property string cachePath: cacheDir + "/proton-pass.json"
   readonly property int peerLockMs: 90000
+  readonly property int directCliTimeoutMs: 45000
 
   property var _previewItem: null
   property var _previewQueue: []
@@ -61,6 +63,11 @@ Item {
   property string _createStdinPayload: ""
   property string _generateOutput: ""
   property string _generateError: ""
+  property bool _copyTimedOut: false
+  property bool _viewTimedOut: false
+  property bool _previewTimedOut: false
+  property bool _createTimedOut: false
+  property bool _generateTimedOut: false
   property bool _writingCache: false
   property bool _cacheHydrated: false
   property bool _dirReady: false
@@ -95,6 +102,137 @@ Item {
     viewedValue = ""
     viewedField = ""
     viewing = false
+    _viewOutput = ""
+    _viewError = ""
+  }
+
+  function appendBounded(current, chunk, limit) {
+    var existing = String(current || "")
+    var incoming = String(chunk || "")
+    var room = Math.max(0, limit - existing.length)
+    return existing + incoming.slice(0, room)
+  }
+
+  function launchFailureMessage() {
+    return "Could not start pass-cli."
+  }
+
+  function timeoutMessage(operation) {
+    return operation + " timed out."
+  }
+
+  function handleCopyTimeout() {
+    if (!copyProcess.running) return
+    _copyTimedOut = true
+    copying = false
+    _copyError = ""
+    copiedMessage = ""
+    var message = timeoutMessage("Copy")
+    lastError = message
+    copyFailed(message)
+    copyProcess.signal(9)
+    copyProcess.running = false
+  }
+
+  function handleViewTimeout() {
+    if (!viewProcess.running) return
+    _viewTimedOut = true
+    resetViewed()
+    var message = timeoutMessage("Secret lookup")
+    lastError = message
+    viewProcess.signal(9)
+    viewProcess.running = false
+  }
+
+  function handlePreviewTimeout() {
+    if (!previewProcess.running) return
+    _previewTimedOut = true
+    var target = _previewItem
+    _previewItem = null
+    previewing = false
+    _urgentPreviewKey = ""
+    _previewOutput = ""
+    _previewError = ""
+    if (target) markPreviewFailed(Model.itemKey(target))
+    lastError = timeoutMessage("Login preview")
+    previewProcess.signal(9)
+    previewProcess.running = false
+    if (previewsEnabled) previewTimer.restart()
+  }
+
+  function handleCreateTimeout() {
+    if (!createProcess.running) return
+    _createTimedOut = true
+    _createStdinPayload = ""
+    createProcess.stdinEnabled = false
+    creating = false
+    _createError = ""
+    var message = timeoutMessage("Login creation")
+    lastError = message
+    createFailed(message)
+    createProcess.signal(9)
+    createProcess.running = false
+  }
+
+  function handleGenerateTimeout() {
+    if (!generateProcess.running) return
+    _generateTimedOut = true
+    generatingPassword = false
+    _generateOutput = ""
+    _generateError = ""
+    lastError = timeoutMessage("Password generation")
+    generateProcess.signal(9)
+    generateProcess.running = false
+  }
+
+  function handleCopyLaunchFailure() {
+    if (copyProcess.running || !copying) return
+    copyWatchdog.stop()
+    copying = false
+    _copyError = ""
+    copiedMessage = ""
+    lastError = launchFailureMessage()
+    copyFailed(lastError)
+  }
+
+  function handleViewLaunchFailure() {
+    if (viewProcess.running || !viewing) return
+    viewWatchdog.stop()
+    resetViewed()
+    lastError = launchFailureMessage()
+  }
+
+  function handlePreviewLaunchFailure() {
+    if (previewProcess.running || (!_previewItem && !previewing)) return
+    previewWatchdog.stop()
+    var target = _previewItem
+    _previewItem = null
+    previewing = false
+    _urgentPreviewKey = ""
+    _previewOutput = ""
+    _previewError = ""
+    if (target) markPreviewFailed(Model.itemKey(target))
+    lastError = launchFailureMessage()
+  }
+
+  function handleCreateLaunchFailure() {
+    if (createProcess.running || !creating) return
+    createWatchdog.stop()
+    _createStdinPayload = ""
+    createProcess.stdinEnabled = false
+    creating = false
+    _createError = ""
+    lastError = launchFailureMessage()
+    createFailed(lastError)
+  }
+
+  function handleGenerateLaunchFailure() {
+    if (generateProcess.running || !generatingPassword) return
+    generateWatchdog.stop()
+    generatingPassword = false
+    _generateOutput = ""
+    _generateError = ""
+    lastError = launchFailureMessage()
   }
 
   function applyStatus(kind, message) {
@@ -235,6 +373,8 @@ Item {
     _createStdinPayload = request.stdin
     createProcess.stdinEnabled = _createStdinPayload !== ""
     createProcess.command = [root.passCli].concat(request.args)
+    _createTimedOut = false
+    createWatchdog.restart()
     createProcess.running = true
   }
 
@@ -244,6 +384,8 @@ Item {
     _generateOutput = ""
     _generateError = ""
     generateProcess.command = [root.passCli, "password", "generate", "random", "--length", "20", "--uppercase", "true", "--symbols", "true"]
+    _generateTimedOut = false
+    generateWatchdog.restart()
     generateProcess.running = true
   }
 
@@ -276,7 +418,9 @@ Item {
     copying = true
     lastError = ""
     _copyError = ""
-    copyProcess.command = ["bash", "-c", Util.shellQuote(root.passCli) + " item view " + Util.shellQuote(uri) + " | wl-copy"]
+    copyProcess.command = ["bash", "-o", "pipefail", "-c", "\"$0\" item view \"$1\" | wl-copy", root.passCli, uri]
+    _copyTimedOut = false
+    copyWatchdog.restart()
     copyProcess.running = true
   }
 
@@ -290,6 +434,8 @@ Item {
     _viewOutput = ""
     _viewError = ""
     viewProcess.command = [root.passCli, "item", "view", uri]
+    _viewTimedOut = false
+    viewWatchdog.restart()
     viewProcess.running = true
   }
 
@@ -415,6 +561,8 @@ Item {
       _previewOutput = ""
       _previewError = ""
       previewProcess.command = [root.passCli, "item", "view", uri, "--output", "json"]
+      _previewTimedOut = false
+      previewWatchdog.restart()
       previewProcess.running = true
       return
     }
@@ -477,6 +625,41 @@ Item {
     interval: 80
     repeat: false
     onTriggered: root.flushPendingPreviews()
+  }
+
+  Timer {
+    id: copyWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleCopyTimeout()
+  }
+
+  Timer {
+    id: viewWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleViewTimeout()
+  }
+
+  Timer {
+    id: previewWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handlePreviewTimeout()
+  }
+
+  Timer {
+    id: createWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleCreateTimeout()
+  }
+
+  Timer {
+    id: generateWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleGenerateTimeout()
   }
 
   Component.onCompleted: ensureCacheDir.running = true
@@ -563,7 +746,11 @@ Item {
         ? Model.mergePartialItemLists(root.items, parsed.items, warning ? warning.failedShareIds : [])
         : Model.mergeItemLists(root.items, parsed.items)
       root.fetchedAt = Date.now()
-      root.applyStatus("ready", warning ? warning.message : "")
+      if (parsed.status === "partial")
+        root.fetchWarning = warning ? String(warning.message || "") : ""
+      else
+        root.fetchWarning = ""
+      root.applyStatus("ready", "")
       root.writeCache(0)
     }
   }
@@ -574,7 +761,16 @@ Item {
     command: []
     environment: root.passCliEnvironment
     stderr: StdioCollector { id: copyStderr; waitForEnd: true; onStreamFinished: root._copyError = text }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.handleCopyLaunchFailure() })
+    }
     onExited: function(exitCode) {
+      copyWatchdog.stop()
+      if (root._copyTimedOut) {
+        root._copyTimedOut = false
+        root._copyError = ""
+        return
+      }
       root.copying = false
       if (exitCode === 0) {
         root.showCopied()
@@ -583,11 +779,12 @@ Item {
         var stderr = String(copyStderr.text || root._copyError || "")
         var kind = Model.classifyError(stderr, exitCode)
         var message = root.statusMessageFor(kind, stderr)
-        if (kind === "migration-required") root.blockPreviewSession(kind, stderr)
+        if (Model.isSessionBlockingStatus(kind)) root.blockPreviewSession(kind, stderr)
         root.copiedMessage = ""
         root.lastError = message
         root.copyFailed(message)
       }
+      root._copyError = ""
     }
   }
 
@@ -596,12 +793,27 @@ Item {
     running: false
     command: []
     environment: root.passCliEnvironment
-    stdout: StdioCollector { id: viewStdout; waitForEnd: true; onStreamFinished: root._viewOutput = text }
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._viewOutput = root.appendBounded(root._viewOutput, data, 8192) }
+    }
     stderr: StdioCollector { id: viewStderr; waitForEnd: true; onStreamFinished: root._viewError = text }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.handleViewLaunchFailure() })
+    }
     onExited: function(exitCode) {
+      viewWatchdog.stop()
+      if (root._viewTimedOut) {
+        root._viewTimedOut = false
+        root._viewOutput = ""
+        root._viewError = ""
+        return
+      }
       root.viewing = false
-      var stdout = String(viewStdout.text || root._viewOutput || "")
+      var stdout = String(root._viewOutput || "")
       var stderr = String(viewStderr.text || root._viewError || "")
+      root._viewOutput = ""
+      root._viewError = ""
       if (exitCode === 0) {
         root.lastError = ""
         root.viewedValue = stdout.replace(/\n$/, "")
@@ -619,16 +831,31 @@ Item {
     running: false
     command: []
     environment: root.passCliEnvironment
-    stdout: StdioCollector { id: previewStdout; waitForEnd: true; onStreamFinished: root._previewOutput = text }
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._previewOutput = root.appendBounded(root._previewOutput, data, 1048576) }
+    }
     stderr: StdioCollector { id: previewStderr; waitForEnd: true; onStreamFinished: root._previewError = text }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.handlePreviewLaunchFailure() })
+    }
     onExited: function(exitCode) {
+      previewWatchdog.stop()
+      if (root._previewTimedOut) {
+        root._previewTimedOut = false
+        root._previewOutput = ""
+        root._previewError = ""
+        return
+      }
       var target = root._previewItem
       var urgent = target && Model.itemKey(target) === root._urgentPreviewKey
       root._previewItem = null
       root.previewing = false
       if (urgent) root._urgentPreviewKey = ""
-      var stdout = String(previewStdout.text || root._previewOutput || "")
+      var stdout = String(root._previewOutput || "")
       var stderr = String(previewStderr.text || root._previewError || "")
+      root._previewOutput = ""
+      root._previewError = ""
       if (exitCode === 0 && target) {
         var preview = Model.parseItemPreview(stdout)
         if (preview) {
@@ -664,11 +891,18 @@ Item {
       if (!running) {
         root._createStdinPayload = ""
         stdinEnabled = false
+        Qt.callLater(function() { root.handleCreateLaunchFailure() })
       }
     }
     onExited: function(exitCode) {
+      createWatchdog.stop()
       root._createStdinPayload = ""
       stdinEnabled = false
+      if (root._createTimedOut) {
+        root._createTimedOut = false
+        root._createError = ""
+        return
+      }
       root.creating = false
       if (exitCode === 0) {
         root.lastError = ""
@@ -682,6 +916,7 @@ Item {
         else root.lastError = message
         root.createFailed(message)
       }
+      root._createError = ""
     }
   }
 
@@ -690,11 +925,24 @@ Item {
     running: false
     command: []
     environment: root.passCliEnvironment
-    stdout: StdioCollector { id: generateStdout; waitForEnd: true; onStreamFinished: root._generateOutput = text }
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._generateOutput = root.appendBounded(root._generateOutput, data, 4096) }
+    }
     stderr: StdioCollector { id: generateStderr; waitForEnd: true; onStreamFinished: root._generateError = text }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.handleGenerateLaunchFailure() })
+    }
     onExited: function(exitCode) {
+      generateWatchdog.stop()
+      if (root._generateTimedOut) {
+        root._generateTimedOut = false
+        root._generateOutput = ""
+        root._generateError = ""
+        return
+      }
       root.generatingPassword = false
-      var stdout = String(generateStdout.text || root._generateOutput || "").replace(/\n$/, "")
+      var stdout = String(root._generateOutput || "").replace(/\n$/, "")
       var stderr = String(generateStderr.text || root._generateError || "")
       root._generateOutput = ""
       root._generateError = ""

@@ -72,6 +72,7 @@ Panel {
     if (pass.status === "locked") return "Unlock the session, then reopen this panel."
     if (pass.status === "migration-required") return pass.lastError
     if (pass.status === "error") return pass.lastError || "Could not load Proton Pass."
+    if (listReady && pass.items.length === 0 && pass.fetchWarning !== "") return pass.fetchWarning
     if (listReady && pass.items.length === 0 && pass.lastError !== "") return pass.lastError
     if (listReady && pass.items.length === 0 && !pass.refreshing) return "No login items in your vaults."
     return ""
@@ -264,7 +265,7 @@ Panel {
   }
 
   function saveCreate() {
-    if (pass.creating) return
+    if (pass.creating || pass.generatingPassword) return
     createSubmitAttempted = true
     var title = String(draftTitle || "").trim()
     if (title === "") return
@@ -424,7 +425,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: searchField.activeFocus || titleField.activeFocus || usernameField.activeFocus || passwordField.activeFocus || urlField.activeFocus || vaultDropdown.popupOpen
+      blocked: searchField.activeFocus || titleField.activeFocus || usernameField.activeFocus || passwordField.activeFocus || urlField.activeFocus || vaultDropdown.popupOpen || statusText.activeFocus || (root.showCreate && !keyCatcher.activeFocus)
       onMoveRequested: function(dx, dy) { root.moveCursor(dx, dy) }
       onActivateRequested: {
         if (root.viewMode === "detail" || root.viewMode === "create") return
@@ -461,6 +462,7 @@ Panel {
 
               PanelActionButton {
                 visible: root.showDetail || root.showCreate
+                enabled: !pass.generatingPassword
                 iconText: "󰅁"
                 tooltipText: "Back"
                 foreground: root.foreground
@@ -507,7 +509,7 @@ Panel {
 
           TextField {
             id: searchField
-            visible: root.viewMode === "list" && pass.status !== "missing" && pass.status !== "unauthenticated" && pass.status !== "locked" && pass.status !== "error"
+            visible: root.viewMode === "list" && pass.status !== "missing" && pass.status !== "unauthenticated" && pass.status !== "locked" && pass.status !== "migration-required" && pass.status !== "error"
             width: parent.width
             placeholderText: "Search"
             text: root.filterText
@@ -548,6 +550,16 @@ Panel {
           }
 
           Text {
+            visible: root.showList && root.statusHint === "" && pass.fetchWarning !== ""
+            width: parent.width
+            text: pass.fetchWarning
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
             visible: root.showList && root.statusHint === "" && pass.lastError !== ""
             width: parent.width
             text: pass.lastError
@@ -573,7 +585,8 @@ Panel {
             }
           }
 
-          Text {
+          TextEdit {
+            id: statusText
             visible: !root.showDetail && !root.showCreate && root.statusHint !== ""
             width: parent.width
             text: root.statusHint
@@ -581,6 +594,10 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             wrapMode: Text.WordWrap
+            readOnly: true
+            selectByMouse: true
+            selectByKeyboard: true
+            activeFocusOnTab: pass.status === "migration-required"
           }
         }
 
@@ -966,7 +983,7 @@ Panel {
                 text: pass.creating ? "Creating…" : "Create Login"
                 iconText: pass.creating ? "󰑮" : "󰄬"
                 iconSpinning: pass.creating
-                enabled: !pass.creating
+                enabled: !pass.creating && !pass.generatingPassword
                 selected: true
                 bordered: true
                 focusable: true
