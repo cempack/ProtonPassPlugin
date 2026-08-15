@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.cempack.proton-pass",
   "name": "Proton Pass",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "author": "Elliot",
   "license": "MIT",
   "description": "Search and copy Proton Pass logins from the Omarchy bar, in an Apple Passwords-style popover.",
