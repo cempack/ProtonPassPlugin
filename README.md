@@ -64,7 +64,7 @@ Click the key icon in the bar to open or close the panel. Press Escape to close 
 omarchy bar move io.github.cempack.proton-pass --section right
 ```
 
-Widget settings (`passCliPath`, `maxRecent`, `cacheMinutes`) live on the plugin's bar entry in `~/.config/omarchy/shell.json`. Metadata cache is `~/.cache/omarchy/proton-pass.json`.
+Widget settings (`passCliPath`, `cacheMinutes`) live on the plugin's bar entry in `~/.config/omarchy/shell.json`. Metadata cache is `~/.cache/omarchy/proton-pass.json`.
 
 ## Remove
 

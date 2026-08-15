@@ -798,7 +798,6 @@ Panel {
     foreground: root.foreground
     dim: root.dim
     fontFamily: root.fontFamily
-    onHasCursorChanged: if (hasCursor && root.cursorActive) root.scrollCursorIntoView()
     onHovered: {
       root.cursorActive = true
       root.selectedIndex = cursorIndex

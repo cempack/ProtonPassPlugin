@@ -11,6 +11,8 @@ const Model = new Function(
 )()
 
 const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+const readmeSource = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
 
 function makeItems(count) {
   var out = []
@@ -67,7 +69,16 @@ var capped = Model.visiblePreviewWindow(false, [], makeItems(100), {
 assert.ok(capped.length <= 12, "preview window stays bounded when many rows are visible")
 
 assert.match(panelSource, /reuseItems:\s*true/, "ListView delegate reuse stays enabled")
-assert.match(panelSource, /onHasCursorChanged:.*scrollCursorIntoView/, "keyboard scroll stays centralized on cursor rows")
+assert.doesNotMatch(
+  panelSource,
+  /onHasCursorChanged:.*scrollCursorIntoView/,
+  "hover and delegate reuse must not trigger list scroll"
+)
+assert.match(
+  panelSource,
+  /function moveCursor[\s\S]*?scrollCursorIntoView\(\)/,
+  "keyboard navigation keeps a single centralized scroll call"
+)
 assert.match(
   panelSource,
   /footer:[\s\S]*visible:\s*root\.searching && root\.filtered\.length === 0/,
@@ -75,5 +86,11 @@ assert.match(
 )
 assert.doesNotMatch(panelSource, /recentlyUsed\([^)]*,\s*maxRecent/, "list must not cap recent rows with maxRecent")
 assert.doesNotMatch(panelSource, /recentlyUsed\([^)]*,\s*root\.maxRecent/, "list must not cap recent rows with maxRecent")
+assert.ok(!("maxRecent" in manifest.barWidget.defaults), "manifest defaults must not expose maxRecent")
+assert.ok(
+  !manifest.barWidget.schema.some(function (entry) { return entry.key === "maxRecent" }),
+  "manifest schema must not expose maxRecent"
+)
+assert.doesNotMatch(readmeSource, /maxRecent/, "README must not document maxRecent")
 
 console.log("ok")
