@@ -418,7 +418,7 @@ Item {
     copying = true
     lastError = ""
     _copyError = ""
-    copyProcess.command = ["bash", "-o", "pipefail", "-c", "\"$0\" item view \"$1\" | wl-copy", root.passCli, uri]
+    copyProcess.command = ["timeout", "--signal=TERM", "--kill-after=2s", "30s", "bash", "-o", "pipefail", "-c", "\"$0\" item view \"$1\" | wl-copy", root.passCli, uri]
     _copyTimedOut = false
     copyWatchdog.restart()
     copyProcess.running = true
@@ -777,6 +777,14 @@ Item {
         root.lastError = ""
       } else {
         var stderr = String(copyStderr.text || root._copyError || "")
+        if (exitCode === 124 || exitCode === 137) {
+          var timeoutError = root.timeoutMessage("Copy")
+          root.copiedMessage = ""
+          root.lastError = timeoutError
+          root.copyFailed(timeoutError)
+          root._copyError = ""
+          return
+        }
         var kind = Model.classifyError(stderr, exitCode)
         var message = root.statusMessageFor(kind, stderr)
         if (Model.isSessionBlockingStatus(kind)) root.blockPreviewSession(kind, stderr)

@@ -598,6 +598,10 @@ Panel {
             selectByMouse: true
             selectByKeyboard: true
             activeFocusOnTab: pass.status === "migration-required"
+            Keys.onEscapePressed: function(event) {
+              root.handleCloseRequest()
+              event.accepted = true
+            }
           }
         }
 
@@ -890,6 +894,12 @@ Panel {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onChanged: function(value) { root.draftShareId = value }
+                Keys.onPressed: function(event) {
+                  if (event.key !== Qt.Key_Escape) return
+                  if (vaultDropdown.popupOpen) vaultDropdown.close()
+                  else root.closeCreate()
+                  event.accepted = true
+                }
               }
 
               Text {
@@ -946,6 +956,7 @@ Panel {
                 }
 
                 Button {
+                  id: generateButton
                   text: pass.generatingPassword ? "Generating…" : "Generate"
                   iconText: "󰝨"
                   enabled: !pass.generatingPassword && !pass.creating
@@ -954,6 +965,10 @@ Panel {
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   onClicked: pass.generatePassword()
+                  Keys.onEscapePressed: function(event) {
+                    root.closeCreate()
+                    event.accepted = true
+                  }
                 }
               }
 
@@ -991,6 +1006,10 @@ Panel {
                 fontFamily: root.fontFamily
                 verticalPadding: Style.space(10)
                 onClicked: root.saveCreate()
+                Keys.onEscapePressed: function(event) {
+                  root.closeCreate()
+                  event.accepted = true
+                }
               }
             }
           }

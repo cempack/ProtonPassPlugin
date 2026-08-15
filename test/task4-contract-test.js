@@ -74,7 +74,21 @@ assert.match(
 )
 assert.match(serviceSource, /timed out/i, "watchdogs surface a sanitized timeout message")
 
-assert.match(serviceSource, /copyProcess\.command\s*=\s*\[[^\n]*pipefail/, "copy pipeline propagates pass-cli failure")
+assert.match(
+  serviceSource,
+  /copyProcess\.command\s*=\s*\["timeout",\s*"--signal=TERM",\s*"--kill-after=2s",\s*"30s",\s*"bash",\s*"-o",\s*"pipefail"/,
+  "copy pipeline uses GNU timeout process-group termination with kill escalation and pipefail"
+)
+assert.doesNotMatch(
+  serviceSource,
+  /copyProcess\.command\s*=\s*\[[^\n]*--foreground/,
+  "copy timeout must retain GNU timeout child process-group behavior"
+)
+assert.match(
+  copyProcessSource,
+  /exitCode\s*===\s*124[\s\S]*timeoutMessage\("Copy"\)/,
+  "GNU timeout exits surface the sanitized copy timeout message"
+)
 assert.doesNotMatch(copyProcessSource, /stdout:\s*StdioCollector/, "copied secret output never enters QML memory")
 assert.match(copyProcessSource, /classifyError/, "copy pipeline stderr remains classifiable")
 assert.match(
@@ -182,6 +196,26 @@ assert.match(
 
 assert.match(panelSource, /TextEdit\s*\{[\s\S]*selectByMouse:\s*true/, "migration commands are mouse-selectable")
 assert.match(panelSource, /TextEdit\s*\{[\s\S]*selectByKeyboard:\s*true/, "migration commands are keyboard-selectable")
+assert.match(
+  panelSource,
+  /id:\s*statusText[\s\S]*Keys\.onEscapePressed:[\s\S]*root\.handleCloseRequest\(\)/,
+  "Escape closes the panel while recovery commands have focus"
+)
+assert.match(
+  panelSource,
+  /id:\s*vaultDropdown[\s\S]*Keys\.onPressed:[\s\S]*Qt\.Key_Escape[\s\S]*vaultDropdown\.popupOpen[\s\S]*vaultDropdown\.close\(\)[\s\S]*root\.closeCreate\(\)/,
+  "Escape closes the vault popup first and otherwise cancels create"
+)
+assert.match(
+  panelSource,
+  /id:\s*generateButton[\s\S]*focusable:\s*true[\s\S]*Keys\.onEscapePressed:[\s\S]*root\.closeCreate\(\)/,
+  "Escape cancels create while Generate has focus"
+)
+assert.match(
+  panelSource,
+  /id:\s*createButton[\s\S]*focusable:\s*true[\s\S]*Keys\.onEscapePressed:[\s\S]*root\.closeCreate\(\)/,
+  "Escape cancels create while Create Login has focus"
+)
 
 assert.match(panelSource, /function resetDraft[\s\S]*draftPassword\s*=\s*""/, "draft model password is cleared")
 assert.match(panelSource, /function resetDraft[\s\S]*passwordField\.text\s*=\s*""/, "password input storage is cleared")
