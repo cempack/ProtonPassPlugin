@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,9 @@ from typing import IO, Optional
 
 
 DEFAULT_CLI_TIMEOUT = 60
+MAX_VAULT_WORKERS = 4
 LOCK_NAME = "proton-pass-fetch.lock"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def emit(payload: dict) -> None:
@@ -74,14 +77,41 @@ def classify(stderr: str, code: int) -> str:
     text = (stderr or "").lower()
     if code == 127 or "command not found" in text or "no such file" in text:
         return "missing"
-    if "locked" in text or "session lock" in text or "unlock" in text:
+    if (
+        "sqlcipher_page_cipher" in text
+        or "hmac check failed" in text
+        or "sqlite3codec: error decrypting" in text
+        or "failed to open encrypted database" in text
+        or "file is not a database" in text
+        or "encryption key may not match" in text
+        or "encryption key mismatch" in text
+        or (
+            "database" in text
+            and ("decrypt" in text or "decryption" in text)
+            and ("key" in text or "sqlite" in text or "codec" in text)
+        )
+        or (
+            "database key" in text
+            and any(word in text for word in ("incorrect", "invalid", "mismatch", "wrong"))
+        )
+    ):
+        return "migration-required"
+    if (
+        "session is locked" in text
+        or "session lock" in text
+        or "unlock the session" in text
+        or "pass-cli session unlock" in text
+    ):
         return "locked"
     if (
         "no session" in text
-        or "login" in text
-        or "not logged" in text
+        or "not logged in" in text
         or "unauthenticated" in text
-        or "unauthorized" in text
+        or "please login" in text
+        or "login first" in text
+        or "login required" in text
+        or "must login" in text
+        or "run pass-cli login" in text
     ):
         return "unauthenticated"
     return "error"
@@ -99,6 +129,15 @@ def vault_name(vault: dict) -> str:
     return str(vault.get("name") or vault.get("vault_name") or vault.get("vaultName") or "")
 
 
+def sanitized_vault_name(vault: dict) -> str:
+    name = ANSI_ESCAPE_RE.sub("", vault_name(vault))
+    name = "".join(char if char.isprintable() else " " for char in name)
+    name = " ".join(name.split())
+    if not name:
+        name = "Unnamed vault"
+    return name[:64]
+
+
 def as_list(value):
     if isinstance(value, list):
         return value
@@ -110,10 +149,11 @@ def as_list(value):
     return []
 
 
-def list_vault_items(cli: str, vault: dict) -> list[dict]:
+def list_vault_items(cli: str, vault: dict) -> dict:
     share_id = vault_id(vault)
+    name = sanitized_vault_name(vault)
     if not share_id:
-        return []
+        return {"ok": False, "status": "error", "name": name, "shareId": "", "items": []}
     result = run_cli(
         cli,
         [
@@ -130,19 +170,40 @@ def list_vault_items(cli: str, vault: dict) -> list[dict]:
         ],
     )
     if result.returncode != 0:
-        return []
+        detail = result.stderr or result.stdout or ""
+        return {
+            "ok": False,
+            "status": classify(detail, result.returncode),
+            "name": name,
+            "shareId": share_id,
+            "items": [],
+        }
     try:
         parsed = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
-        return []
-    name = vault_name(vault)
+        return {"ok": False, "status": "error", "name": name, "shareId": share_id, "items": []}
     items = []
     for item in as_list(parsed):
         if isinstance(item, dict):
             item = dict(item)
             item["vault_name"] = name
             items.append(item)
-    return items
+    return {"ok": True, "status": "ready", "name": name, "shareId": share_id, "items": items}
+
+
+def vault_failure_warning(failures: list[dict]) -> dict:
+    names = [str(failure.get("name") or "Unnamed vault") for failure in failures]
+    share_ids = [str(failure.get("shareId") or "") for failure in failures]
+    share_ids = [share_id for share_id in share_ids if share_id]
+    count = len(failures)
+    noun = "vault" if count == 1 else "vaults"
+    return {
+        "kind": "partial-vault-failure",
+        "failedVaultCount": count,
+        "failedVaultNames": names,
+        "failedShareIds": share_ids,
+        "message": f"Could not refresh {count} {noun}: {', '.join(names)}.",
+    }
 
 
 def try_acquire_lock() -> Optional[IO[str]]:
@@ -227,12 +288,73 @@ def scan(cli: str) -> int:
         fail("error", "Could not read vault list")
         return 0
 
+    valid_vaults = [vault for vault in vaults if isinstance(vault, dict)]
     items: list[dict] = []
-    workers = min(8, max(1, len(vaults)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(list_vault_items, cli, vault) for vault in vaults if isinstance(vault, dict)]
-        for future in as_completed(futures):
-            items.extend(future.result())
+    failures: list[dict] = []
+    successful_vaults = 0
+    if valid_vaults:
+        workers = min(MAX_VAULT_WORKERS, len(valid_vaults))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(list_vault_items, cli, vault): vault
+                for vault in valid_vaults
+            }
+            for future in as_completed(futures):
+                vault = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    result = {
+                        "ok": False,
+                        "status": "error",
+                        "name": sanitized_vault_name(vault),
+                        "shareId": vault_id(vault),
+                        "items": [],
+                    }
+                if result.get("ok"):
+                    successful_vaults += 1
+                    items.extend(result.get("items") or [])
+                else:
+                    failures.append(result)
+
+    if failures:
+        warning = vault_failure_warning(failures)
+        blocking = next(
+            (
+                failure.get("status")
+                for failure in failures
+                if failure.get("status") in {"migration-required", "locked", "unauthenticated", "missing"}
+            ),
+            "",
+        )
+        if blocking:
+            emit({
+                "ok": False,
+                "status": blocking,
+                "message": warning["message"],
+                "exitCode": 1,
+                "items": [],
+                "warning": warning,
+            })
+            return 0
+        if successful_vaults == 0:
+            emit({
+                "ok": False,
+                "status": "error",
+                "message": warning["message"],
+                "exitCode": 1,
+                "items": [],
+                "warning": warning,
+            })
+            return 0
+        emit({
+            "ok": True,
+            "status": "partial",
+            "email": email,
+            "items": items,
+            "warning": warning,
+        })
+        return 0
 
     emit({"ok": True, "status": "ready", "email": email, "items": items})
     return 0

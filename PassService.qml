@@ -16,7 +16,7 @@ Item {
   property bool previewing: false
   property bool creating: false
   property bool generatingPassword: false
-  property string status: "idle"  // idle | loading | ready | missing | unauthenticated | locked | error
+  property string status: "idle"  // idle | loading | ready | missing | unauthenticated | locked | migration-required | error
   property string lastError: ""
   property string email: ""
   property var items: []
@@ -58,7 +58,9 @@ Item {
   property string _previewOutput: ""
   property string _previewError: ""
   property string _createError: ""
+  property string _createStdinPayload: ""
   property string _generateOutput: ""
+  property string _generateError: ""
   property bool _writingCache: false
   property bool _cacheHydrated: false
   property bool _dirReady: false
@@ -109,6 +111,8 @@ Item {
     if (kind === "missing") return "pass-cli is not installed"
     if (kind === "unauthenticated") return "Sign in with pass-cli login"
     if (kind === "locked") return "Session is locked. Run pass-cli session unlock"
+    if (kind === "migration-required")
+      return "PROTON_PASS_LINUX_KEYRING=dbus pass-cli logout --force\nPROTON_PASS_LINUX_KEYRING=dbus pass-cli login"
     return elideStatus(stderr) || "Could not load Proton Pass"
   }
 
@@ -133,6 +137,7 @@ Item {
 
   function refresh(force, silent) {
     if (fetchProcess.running) return
+    if (status === "migration-required" && force !== true) return
     if (force !== true && !isStale()) return
     if (force !== true && isPeerRefreshing()) return
     if (force === true)
@@ -142,7 +147,7 @@ Item {
     resetViewed()
     var visible = silent === true ? items.length === 0 : (force === true || items.length === 0)
     if (visible) {
-      if (items.length === 0 && status !== "missing" && status !== "unauthenticated" && status !== "locked")
+      if (items.length === 0 && status !== "missing" && status !== "unauthenticated" && status !== "locked" && status !== "migration-required")
         status = "loading"
       refreshing = true
     }
@@ -212,11 +217,12 @@ Item {
       createFailed(lastError)
       return
     }
-    var password = String(data.password || "").trim()
+    var password = String(data.password || "")
     lastError = ""
     creating = true
     _createError = ""
-    var args = Model.buildCreateLoginCommand({
+    _createStdinPayload = ""
+    var request = Model.buildCreateLoginRequest({
       shareId: data.shareId,
       vaultName: data.vaultName,
       title: title,
@@ -226,7 +232,9 @@ Item {
       generatePassword: data.generatePassword === true || password === "",
       url: String(data.url || "").trim()
     })
-    createProcess.command = [root.passCli].concat(args)
+    _createStdinPayload = request.stdin
+    createProcess.stdinEnabled = _createStdinPayload !== ""
+    createProcess.command = [root.passCli].concat(request.args)
     createProcess.running = true
   }
 
@@ -234,6 +242,7 @@ Item {
     if (generateProcess.running) return
     generatingPassword = true
     _generateOutput = ""
+    _generateError = ""
     generateProcess.command = [root.passCli, "password", "generate", "random", "--length", "20", "--uppercase", "true", "--symbols", "true"]
     generateProcess.running = true
   }
@@ -346,6 +355,7 @@ Item {
 
   function blockPreviewSession(kind, stderr) {
     _previewSessionBlocked = true
+    if (previewProcess.running) previewProcess.running = false
     stopPreviews()
     var message = statusMessageFor(kind, stderr)
     if (lastError === "" || status !== kind)
@@ -507,7 +517,7 @@ Item {
     repeat: true
     onTriggered: {
       if (!root._cacheHydrated || fetchProcess.running) return
-      if (root.status === "missing" || root.status === "unauthenticated") return
+      if (root.status === "missing" || Model.isSessionBlockingStatus(root.status)) return
       if (root.isStale()) root.refresh(false)
     }
   }
@@ -528,24 +538,32 @@ Item {
       if (parsed.status === "busy") {
         root.writeCache(0)
         return
-      }      if (exitCode !== 0 && !parsed.ok) {
+      }
+      if (exitCode !== 0 && !parsed.ok) {
         var kind = parsed.status && parsed.status !== "error" ? parsed.status : Model.classifyError(stderr || stdout, exitCode)
-        if (root.items.length === 0) root.applyStatus(kind, root.statusMessageFor(kind, parsed.message || stderr || stdout))
-        else root.lastError = root.statusMessageFor(kind, parsed.message || stderr || stdout)
+        var failureMessage = root.statusMessageFor(kind, parsed.message || stderr || stdout)
+        if (kind === "migration-required") root.blockPreviewSession(kind, parsed.message || stderr || stdout)
+        else if (root.items.length === 0) root.applyStatus(kind, failureMessage)
+        else root.lastError = failureMessage
         root.writeCache(0)
         return
       }
       if (!parsed.ok) {
-        if (root.items.length === 0) root.applyStatus(parsed.status, root.statusMessageFor(parsed.status, parsed.message))
-        else root.lastError = root.statusMessageFor(parsed.status, parsed.message)
+        var parsedMessage = root.statusMessageFor(parsed.status, parsed.message)
+        if (parsed.status === "migration-required") root.blockPreviewSession(parsed.status, parsed.message)
+        else if (root.items.length === 0) root.applyStatus(parsed.status, parsedMessage)
+        else root.lastError = parsedMessage
         root.writeCache(0)
         return
       }
       root.installed = true
       root.email = parsed.email
-      root.items = Model.mergeItemLists(root.items, parsed.items)
+      var warning = parsed.warning || null
+      root.items = parsed.status === "partial"
+        ? Model.mergePartialItemLists(root.items, parsed.items, warning ? warning.failedShareIds : [])
+        : Model.mergeItemLists(root.items, parsed.items)
       root.fetchedAt = Date.now()
-      root.applyStatus("ready", "")
+      root.applyStatus("ready", warning ? warning.message : "")
       root.writeCache(0)
     }
   }
@@ -565,6 +583,7 @@ Item {
         var stderr = String(copyStderr.text || root._copyError || "")
         var kind = Model.classifyError(stderr, exitCode)
         var message = root.statusMessageFor(kind, stderr)
+        if (kind === "migration-required") root.blockPreviewSession(kind, stderr)
         root.copiedMessage = ""
         root.lastError = message
         root.copyFailed(message)
@@ -589,7 +608,8 @@ Item {
       } else {
         root.resetViewed()
         var kind = Model.classifyError(stderr, exitCode)
-        root.lastError = root.statusMessageFor(kind, stderr)
+        if (kind === "migration-required") root.blockPreviewSession(kind, stderr)
+        else root.lastError = root.statusMessageFor(kind, stderr)
       }
     }
   }
@@ -632,8 +652,23 @@ Item {
     running: false
     command: []
     environment: root.passCliEnvironment
+    stdinEnabled: false
     stderr: StdioCollector { id: createStderr; waitForEnd: true; onStreamFinished: root._createError = text }
+    onStarted: {
+      var payload = root._createStdinPayload
+      if (payload !== "") write(payload)
+      root._createStdinPayload = ""
+      stdinEnabled = false
+    }
+    onRunningChanged: {
+      if (!running) {
+        root._createStdinPayload = ""
+        stdinEnabled = false
+      }
+    }
     onExited: function(exitCode) {
+      root._createStdinPayload = ""
+      stdinEnabled = false
       root.creating = false
       if (exitCode === 0) {
         root.lastError = ""
@@ -643,7 +678,8 @@ Item {
         var stderr = String(createStderr.text || root._createError || "")
         var kind = Model.classifyError(stderr, exitCode)
         var message = root.statusMessageFor(kind, stderr)
-        root.lastError = message
+        if (kind === "migration-required") root.blockPreviewSession(kind, stderr)
+        else root.lastError = message
         root.createFailed(message)
       }
     }
@@ -655,11 +691,20 @@ Item {
     command: []
     environment: root.passCliEnvironment
     stdout: StdioCollector { id: generateStdout; waitForEnd: true; onStreamFinished: root._generateOutput = text }
+    stderr: StdioCollector { id: generateStderr; waitForEnd: true; onStreamFinished: root._generateError = text }
     onExited: function(exitCode) {
       root.generatingPassword = false
       var stdout = String(generateStdout.text || root._generateOutput || "").replace(/\n$/, "")
+      var stderr = String(generateStderr.text || root._generateError || "")
       root._generateOutput = ""
-      if (exitCode === 0 && stdout !== "") root.passwordGenerated(stdout)
+      root._generateError = ""
+      if (exitCode === 0 && stdout !== "") {
+        root.passwordGenerated(stdout)
+      } else if (exitCode !== 0) {
+        var kind = Model.classifyError(stderr || stdout, exitCode)
+        if (kind === "migration-required") root.blockPreviewSession(kind, stderr || stdout)
+        else root.lastError = root.statusMessageFor(kind, stderr || stdout)
+      }
     }
   }
 }

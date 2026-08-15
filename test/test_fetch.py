@@ -219,6 +219,64 @@ class TimeoutTests(FetchTestCase):
         self.assertEqual(payload.get("status"), "error")
         self.assertNotIn("password", json.dumps(payload).lower())
 
+    def test_every_cli_path_has_a_finite_default_timeout(self) -> None:
+        vaults = [
+            {"share_id": "share-1", "name": "Personal"},
+            {"share_id": "share-2", "name": "Work"},
+        ]
+
+        def fake_subprocess_run(command, **kwargs):
+            if command[1:2] == ["info"]:
+                stdout = '{"email":"a@b.c"}'
+            elif command[1:3] == ["vault", "list"]:
+                stdout = json.dumps(vaults)
+            elif command[1:3] == ["item", "list"]:
+                stdout = '{"items":[]}'
+            else:
+                raise AssertionError(f"unexpected command: {command}")
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        buf = io.StringIO()
+        with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+            with mock.patch.object(subprocess, "run", side_effect=fake_subprocess_run) as run:
+                with mock.patch.object(sys, "stdout", buf):
+                    fetch.scan("pass-cli")
+
+        self.assertGreaterEqual(run.call_count, 4)
+        for call in run.call_args_list:
+            timeout = call.kwargs.get("timeout")
+            self.assertIsNotNone(timeout)
+            self.assertGreater(timeout, 0)
+
+
+class ClassificationTests(unittest.TestCase):
+    def test_sqlcipher_and_database_key_failures_require_migration(self) -> None:
+        messages = [
+            "sqlcipher_page_cipher: hmac check failed for pgno=1",
+            "Failed to open encrypted database: file is not a database. The encryption key may not match",
+            "sqlite3Codec: error decrypting page 1 data",
+            "Database decryption failed because the database key is incorrect",
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertEqual(fetch.classify(message, 1), "migration-required")
+
+    def test_generic_login_network_and_password_text_are_not_session_errors(self) -> None:
+        messages = [
+            "Could not load login item",
+            "Network login request failed",
+            "Password authentication failed",
+            "Unauthorized network response",
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertEqual(fetch.classify(message, 1), "error")
+
+    def test_precise_session_messages_remain_unauthenticated(self) -> None:
+        for message in ["Please login first", "There is no session", "Not logged in"]:
+            with self.subTest(message=message):
+                self.assertEqual(fetch.classify(message, 1), "unauthenticated")
+
 
 class PartialVaultTests(FetchTestCase):
     def test_one_vault_failure_keeps_other_vault_items(self) -> None:
@@ -265,14 +323,110 @@ class PartialVaultTests(FetchTestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(payload.get("ok"), True)
+        self.assertEqual(payload.get("status"), "partial")
         self.assertEqual(payload.get("email"), "a@b.c")
         items = payload.get("items") or []
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["title"], "GitHub")
         self.assertEqual(items[0]["vault_name"], "Personal")
+        warning = payload.get("warning") or {}
+        self.assertEqual(warning.get("kind"), "partial-vault-failure")
+        self.assertEqual(warning.get("failedVaultCount"), 1)
+        self.assertEqual(warning.get("failedVaultNames"), ["Broken"])
+        self.assertEqual(warning.get("failedShareIds"), ["share-bad"])
+        self.assertIn("Broken", warning.get("message", ""))
+        self.assertNotIn("vault unavailable", json.dumps(warning))
         dumped = json.dumps(payload)
         self.assertNotIn("password", dumped)
         self.assertNotIn("--show-secrets", dumped)
+
+    def test_vault_timeout_is_a_sanitized_partial_warning(self) -> None:
+        info = subprocess.CompletedProcess(["pass-cli", "info"], 0, '{"email":"a@b.c"}', "")
+        vaults = subprocess.CompletedProcess(
+            ["pass-cli", "vault", "list"],
+            0,
+            json.dumps([
+                {"share_id": "ok", "name": "Personal"},
+                {"share_id": "slow", "name": "Slow\nVault\u001b[31m"},
+            ]),
+            "",
+        )
+
+        def fake_run(cli: str, args: list[str], timeout=None):
+            if args[:1] == ["info"]:
+                return info
+            if args[:2] == ["vault", "list"]:
+                return vaults
+            share = args[args.index("--share-id") + 1]
+            if share == "ok":
+                return subprocess.CompletedProcess(
+                    args, 0, json.dumps({"items": [_login_item("item-1", "ok", "GitHub")]}), ""
+                )
+            return subprocess.CompletedProcess(args, 124, "", "timeout waiting for pass-cli: internal detail")
+
+        with mock.patch.object(fetch, "run_cli", side_effect=fake_run):
+            with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+                _, payload = self._capture_main()
+
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("status"), "partial")
+        warning = payload.get("warning") or {}
+        self.assertEqual(warning.get("failedVaultCount"), 1)
+        self.assertEqual(warning.get("failedVaultNames"), ["Slow Vault"])
+        self.assertNotIn("internal detail", json.dumps(payload))
+
+    def test_worker_count_is_capped_at_four_and_vault_count(self) -> None:
+        vaults = [{"share_id": f"share-{idx}", "name": f"Vault {idx}"} for idx in range(7)]
+        info = subprocess.CompletedProcess(["pass-cli", "info"], 0, '{"email":"a@b.c"}', "")
+        vault_result = subprocess.CompletedProcess(
+            ["pass-cli", "vault", "list"], 0, json.dumps(vaults), ""
+        )
+        real_executor = fetch.ThreadPoolExecutor
+        seen_workers = []
+
+        def recording_executor(*args, **kwargs):
+            seen_workers.append(kwargs.get("max_workers", args[0] if args else None))
+            return real_executor(*args, **kwargs)
+
+        def fake_run(cli: str, args: list[str], timeout=None):
+            if args[:1] == ["info"]:
+                return info
+            if args[:2] == ["vault", "list"]:
+                return vault_result
+            return subprocess.CompletedProcess(args, 0, '{"items":[]}', "")
+
+        with mock.patch.object(fetch, "ThreadPoolExecutor", side_effect=recording_executor):
+            with mock.patch.object(fetch, "run_cli", side_effect=fake_run):
+                with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+                    _, payload = self._capture_main()
+
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(seen_workers, [4])
+
+    def test_all_vault_failures_are_not_reported_as_success(self) -> None:
+        info = subprocess.CompletedProcess(["pass-cli", "info"], 0, '{"email":"a@b.c"}', "")
+        vaults = subprocess.CompletedProcess(
+            ["pass-cli", "vault", "list"],
+            0,
+            json.dumps([{"share_id": "bad", "name": "Broken"}]),
+            "",
+        )
+
+        def fake_run(cli: str, args: list[str], timeout=None):
+            if args[:1] == ["info"]:
+                return info
+            if args[:2] == ["vault", "list"]:
+                return vaults
+            return subprocess.CompletedProcess(args, 1, "", "private backend detail")
+
+        with mock.patch.object(fetch, "run_cli", side_effect=fake_run):
+            with mock.patch.object(fetch.shutil, "which", return_value="/usr/bin/pass-cli"):
+                _, payload = self._capture_main()
+
+        self.assertFalse(payload.get("ok"))
+        self.assertEqual(payload.get("status"), "error")
+        self.assertEqual((payload.get("warning") or {}).get("failedVaultNames"), ["Broken"])
+        self.assertNotIn("private backend detail", json.dumps(payload))
 
 
 if __name__ == "__main__":

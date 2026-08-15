@@ -32,6 +32,7 @@ Panel {
   property string draftPassword: ""
   property string draftUrl: ""
   property string draftShareId: ""
+  property bool createSubmitAttempted: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -59,7 +60,7 @@ Panel {
   readonly property bool showList: listReady && viewMode === "list"
   readonly property bool showDetail: viewMode === "detail" && selectedItem !== null
   readonly property bool showCreate: viewMode === "create"
-  readonly property bool showLoading: pass.refreshing && pass.items.length === 0 && pass.status !== "missing" && pass.status !== "unauthenticated" && pass.status !== "locked" && pass.status !== "error"
+  readonly property bool showLoading: pass.refreshing && pass.items.length === 0 && pass.status !== "missing" && pass.status !== "unauthenticated" && pass.status !== "locked" && pass.status !== "migration-required" && pass.status !== "error"
   readonly property bool detailUsernameLoading: {
     if (!showDetail || !selectedItem || !pass.previewing || !pass._previewItem) return false
     if (selectedItem.id !== pass._previewItem.id || selectedItem.shareId !== pass._previewItem.shareId) return false
@@ -69,7 +70,9 @@ Panel {
     if (pass.status === "missing") return "Install pass-cli, then sign in with pass-cli login."
     if (pass.status === "unauthenticated") return "Run pass-cli login in a terminal."
     if (pass.status === "locked") return "Unlock the session, then reopen this panel."
+    if (pass.status === "migration-required") return pass.lastError
     if (pass.status === "error") return pass.lastError || "Could not load Proton Pass."
+    if (listReady && pass.items.length === 0 && pass.lastError !== "") return pass.lastError
     if (listReady && pass.items.length === 0 && !pass.refreshing) return "No login items in your vaults."
     return ""
   }
@@ -94,6 +97,7 @@ Panel {
   function close() {
     pass.stopPreviews()
     pass.clearCopied()
+    resetDraft()
     root.controller.hide()
     setCenterHoverRevealSuppressed(false)
     closeAfterCopy = false
@@ -165,6 +169,11 @@ Panel {
     draftPassword = ""
     draftUrl = ""
     draftShareId = ""
+    createSubmitAttempted = false
+    if (titleField) titleField.text = ""
+    if (usernameField) usernameField.text = ""
+    if (passwordField) passwordField.text = ""
+    if (urlField) urlField.text = ""
   }
 
   function focusSearch() {
@@ -233,6 +242,7 @@ Panel {
     draftPassword = ""
     draftUrl = ""
     draftShareId = vaults.length > 0 ? vaults[0].shareId : ""
+    createSubmitAttempted = false
     selectedItem = null
     passwordVisible = false
     pass.resetViewed()
@@ -255,6 +265,7 @@ Panel {
 
   function saveCreate() {
     if (pass.creating) return
+    createSubmitAttempted = true
     var title = String(draftTitle || "").trim()
     if (title === "") return
     pass.createLogin({
@@ -262,7 +273,7 @@ Panel {
       title: title,
       username: draftUsername,
       password: draftPassword,
-      generatePassword: String(draftPassword || "").trim() === "",
+      generatePassword: draftPassword === "",
       url: draftUrl
     })
   }
@@ -332,6 +343,7 @@ Panel {
       })
     } else {
       pass.stopPreviews()
+      root.resetDraft()
     }
   }
 
@@ -393,6 +405,7 @@ Panel {
       root.closeCreate()
     }
     function onPasswordGenerated(value) {
+      if (!root.opened || !root.showCreate) return
       root.draftPassword = String(value || "")
       if (passwordField) passwordField.text = root.draftPassword
     }
@@ -457,7 +470,7 @@ Panel {
 
               Text {
                 Layout.fillWidth: true
-                text: root.showCreate ? "New Password" : (root.showDetail && root.selectedItem ? String(root.selectedItem.title || "Password") : "Passwords")
+                text: root.showCreate ? "Create Login" : (root.showDetail && root.selectedItem ? String(root.selectedItem.title || "Password") : "Passwords")
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title
@@ -471,16 +484,6 @@ Panel {
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-              }
-
-              PanelActionButton {
-                visible: root.showCreate
-                iconText: "󰄬"
-                tooltipText: "Save"
-                enabled: String(root.draftTitle).trim() !== "" && !pass.creating
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.saveCreate()
               }
 
               PanelActionButton {
@@ -542,6 +545,16 @@ Panel {
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            visible: root.showList && root.statusHint === "" && pass.lastError !== ""
+            width: parent.width
+            text: pass.lastError
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           Text {
@@ -709,59 +722,100 @@ Panel {
             }
           }
 
-          Column {
+          Flickable {
+            id: createFlick
             visible: root.showCreate
-            width: parent.width
-            spacing: Style.space(8)
+            anchors.fill: parent
+            contentWidth: width
+            contentHeight: createForm.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            TextField {
-              id: titleField
-              width: parent.width
-              placeholderText: "Title"
-              foreground: root.foreground
-              font.family: root.fontFamily
-              onTextChanged: root.draftTitle = text
-              Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) {
-                  root.closeCreate()
-                  event.accepted = true
-                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                  usernameField.forceActiveFocus()
-                  event.accepted = true
-                }
-              }
-            }
-
-            TextField {
-              id: usernameField
-              width: parent.width
-              placeholderText: "Username"
-              foreground: root.foreground
-              font.family: root.fontFamily
-              onTextChanged: root.draftUsername = text
-              Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) {
-                  root.closeCreate()
-                  event.accepted = true
-                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                  passwordField.forceActiveFocus()
-                  event.accepted = true
-                }
-              }
-            }
-
-            RowLayout {
-              width: parent.width
+            Column {
+              id: createForm
+              width: createFlick.width
               spacing: Style.space(8)
 
+              Text {
+                width: parent.width
+                text: "Save a new account to Proton Pass."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
+              }
+
+              PanelSectionHeader {
+                width: parent.width
+                text: "ACCOUNT DETAILS"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Row {
+                width: parent.width
+
+                Text {
+                  text: "Title"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+
+                Text {
+                  text: "  Required"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
               TextField {
-                id: passwordField
-                Layout.fillWidth: true
-                placeholderText: "Password"
-                password: true
+                id: titleField
+                width: parent.width
+                placeholderText: "e.g. GitHub"
                 foreground: root.foreground
                 font.family: root.fontFamily
-                onTextChanged: root.draftPassword = text
+                onTextChanged: root.draftTitle = text
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    root.closeCreate()
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    usernameField.forceActiveFocus()
+                    event.accepted = true
+                  }
+                }
+              }
+
+              Text {
+                visible: root.createSubmitAttempted && String(root.draftTitle).trim() === ""
+                width: parent.width
+                text: "Title is required."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                width: parent.width
+                text: "Username"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              TextField {
+                id: usernameField
+                width: parent.width
+                placeholderText: "Email or username"
+                foreground: root.foreground
+                font.family: root.fontFamily
+                onTextChanged: root.draftUsername = text
                 Keys.onPressed: function(event) {
                   if (event.key === Qt.Key_Escape) {
                     root.closeCreate()
@@ -773,64 +827,154 @@ Panel {
                 }
               }
 
-              PanelActionButton {
-                iconText: "󰝨"
-                tooltipText: "Generate password"
-                enabled: !pass.generatingPassword
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: pass.generatePassword()
+              Text {
+                width: parent.width
+                text: "Website"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
               }
-            }
 
-            TextField {
-              id: urlField
-              width: parent.width
-              placeholderText: "Website"
-              foreground: root.foreground
-              font.family: root.fontFamily
-              onTextChanged: root.draftUrl = text
-              Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) {
-                  root.closeCreate()
-                  event.accepted = true
-                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                  root.saveCreate()
-                  event.accepted = true
+              TextField {
+                id: urlField
+                width: parent.width
+                placeholderText: "https://example.com"
+                foreground: root.foreground
+                font.family: root.fontFamily
+                onTextChanged: root.draftUrl = text
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    root.closeCreate()
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    passwordField.forceActiveFocus()
+                    event.accepted = true
+                  }
                 }
               }
-            }
 
-            Dropdown {
-              id: vaultDropdown
-              visible: root.vaultOptions.length > 1
-              width: parent.width
-              label: "Vault"
-              value: root.draftShareId
-              options: root.vaultOptions
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.draftShareId = value }
-            }
+              Text {
+                width: parent.width
+                text: "Vault"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
 
-            Text {
-              visible: String(root.draftPassword).trim() === ""
-              width: parent.width
-              text: "Leave password empty to generate one on save."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
+              Dropdown {
+                id: vaultDropdown
+                visible: root.vaultOptions.length > 0
+                width: parent.width
+                label: ""
+                value: root.draftShareId
+                options: root.vaultOptions
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function(value) { root.draftShareId = value }
+              }
 
-            Text {
-              visible: pass.lastError !== ""
-              width: parent.width
-              text: pass.lastError
-              color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
+              Text {
+                visible: root.vaultOptions.length === 0
+                width: parent.width
+                text: "The default Proton Pass vault will be used."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              PanelSeparator {
+                width: parent.width
+                foreground: root.foreground
+              }
+
+              PanelSectionHeader {
+                width: parent.width
+                text: "SECURITY"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                text: "Password"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              RowLayout {
+                width: parent.width
+                spacing: Style.space(8)
+
+                TextField {
+                  id: passwordField
+                  Layout.fillWidth: true
+                  placeholderText: "Leave blank to generate"
+                  password: true
+                  foreground: root.foreground
+                  font.family: root.fontFamily
+                  onTextChanged: root.draftPassword = text
+                  Keys.onPressed: function(event) {
+                    if (event.key === Qt.Key_Escape) {
+                      root.closeCreate()
+                      event.accepted = true
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                      root.saveCreate()
+                      event.accepted = true
+                    }
+                  }
+                }
+
+                Button {
+                  text: pass.generatingPassword ? "Generating…" : "Generate"
+                  iconText: "󰝨"
+                  enabled: !pass.generatingPassword && !pass.creating
+                  bordered: true
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: pass.generatePassword()
+                }
+              }
+
+              Text {
+                visible: root.draftPassword === ""
+                width: parent.width
+                text: "Leave this blank and Proton Pass will generate a password when you create the login."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                visible: pass.lastError !== ""
+                width: parent.width
+                text: pass.lastError
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Button {
+                id: createButton
+                width: parent.width
+                text: pass.creating ? "Creating…" : "Create Login"
+                iconText: pass.creating ? "󰑮" : "󰄬"
+                iconSpinning: pass.creating
+                enabled: !pass.creating
+                selected: true
+                bordered: true
+                focusable: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                verticalPadding: Style.space(10)
+                onClicked: root.saveCreate()
+              }
             }
           }
         }

@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
+    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, mergePartialItemLists: typeof mergePartialItemLists === 'function' ? mergePartialItemLists : null, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, buildCreateLoginRequest: typeof buildCreateLoginRequest === 'function' ? buildCreateLoginRequest : null, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
 )()
 
 function summaryList() {
@@ -185,6 +185,16 @@ assert.strictEqual(Model.classifyError("Session is locked", 1), "locked")
 assert.strictEqual(Model.classifyError("pass-cli: command not found", 127), "missing")
 assert.strictEqual(Model.classifyError("boom", 1), "error")
 assert.strictEqual(Model.classifyError("[2m2026-08-14T23:55:02.359500Z[0m [31mERROR[0m [2mpass-cli/src/main.rs[0m[2m:[0m[2m332:[0m Command is not logout there is no session", 1), "unauthenticated")
+assert.strictEqual(Model.classifyError("Could not load login item", 1), "error")
+assert.strictEqual(Model.classifyError("Network login request failed", 1), "error")
+assert.strictEqual(Model.classifyError("Password authentication failed", 1), "error")
+assert.strictEqual(Model.classifyError("Unauthorized network response", 1), "error")
+assert.strictEqual(Model.classifyError("sqlcipher_page_cipher: hmac check failed for pgno=1", 1), "migration-required")
+assert.strictEqual(
+  Model.classifyError("Failed to open encrypted database: file is not a database. The encryption key may not match", 1),
+  "migration-required"
+)
+assert.strictEqual(Model.classifyError("sqlite3Codec: error decrypting page 1 data", 1), "migration-required")
 assert.strictEqual(Model.cleanCliText("[31mERROR[0m boom"), "ERROR boom")
 assert.strictEqual(Model.displayError("[2m2026-08-14T23:55:02.359500Z[0m [31mERROR[0m [2mpass-cli/src/main.rs[0m[2m:[0m[2m332:[0m Command is not logout there is no session"), "")
 assert.strictEqual(Model.displayError("vault missing"), "vault missing")
@@ -233,6 +243,34 @@ assert.strictEqual(fetchOk.email, "me@example.com")
 assert.strictEqual(fetchOk.items.length, 1)
 assert.strictEqual(fetchOk.items[0].vaultName, "Personal")
 assert.ok(!("password" in fetchOk.items[0]))
+
+const fetchPartial = Model.parseFetchResult(JSON.stringify({
+  ok: true,
+  status: "partial",
+  email: "me@example.com",
+  warning: {
+    kind: "partial-vault-failure",
+    failedVaultCount: 1,
+    failedVaultNames: ["Work"],
+    failedShareIds: ["share-2"],
+    message: "Could not refresh 1 vault: Work."
+  },
+  items: [
+    {
+      id: "item-gh",
+      share_id: "share-1",
+      title: "GitHub",
+      item_type: "login",
+      vault_name: "Personal"
+    }
+  ]
+}))
+assert.strictEqual(fetchPartial.ok, true)
+assert.strictEqual(fetchPartial.status, "partial")
+assert.strictEqual(fetchPartial.warning.failedVaultCount, 1)
+assert.deepStrictEqual(fetchPartial.warning.failedVaultNames, ["Work"])
+assert.deepStrictEqual(fetchPartial.warning.failedShareIds, ["share-2"])
+assert.strictEqual(fetchPartial.warning.message, "Could not refresh 1 vault: Work.")
 
 const preview = Model.parseItemPreview(JSON.stringify({
   id: "item-dc",
@@ -336,11 +374,35 @@ const createArgs = Model.buildCreateLoginCommand({
 assert.deepStrictEqual(createArgs, [
   "item", "create", "login",
   "--share-id", "share-1",
-  "--title", "GitHub",
-  "--username", "elli",
-  "--password", "secret",
-  "--url", "https://github.com"
+  "--from-template", "-"
 ])
+assert.ok(!createArgs.includes("--password"))
+assert.ok(!createArgs.includes("secret"))
+
+assert.strictEqual(typeof Model.buildCreateLoginRequest, "function")
+const distinctivePassword = "argv-leak-regression-4f06d6"
+const customRequest = Model.buildCreateLoginRequest({
+  shareId: "share-1",
+  title: "GitHub",
+  username: "elli",
+  email: "elli@example.com",
+  password: distinctivePassword,
+  url: "https://github.com"
+})
+assert.deepStrictEqual(customRequest.args, [
+  "item", "create", "login",
+  "--share-id", "share-1",
+  "--from-template", "-"
+])
+assert.ok(!customRequest.args.includes("--password"))
+assert.ok(!customRequest.args.some(function (arg) { return String(arg).includes(distinctivePassword) }))
+assert.deepStrictEqual(JSON.parse(customRequest.stdin), {
+  title: "GitHub",
+  username: "elli",
+  email: "elli@example.com",
+  password: distinctivePassword,
+  urls: ["https://github.com"]
+})
 
 const generated = Model.buildCreateLoginCommand({
   vaultName: "Personal",
@@ -354,6 +416,27 @@ assert.deepStrictEqual(generated, [
   "--generate-password"
 ])
 assert.ok(!generated.includes("--password"))
+const generatedRequest = Model.buildCreateLoginRequest({
+  vaultName: "Personal",
+  title: "New",
+  generatePassword: true
+})
+assert.deepStrictEqual(generatedRequest.args, generated)
+assert.strictEqual(generatedRequest.stdin, "")
+
+assert.strictEqual(typeof Model.mergePartialItemLists, "function")
+const partialMerged = Model.mergePartialItemLists(
+  [
+    { id: "old-ok", shareId: "share-1", title: "Old Personal" },
+    { id: "old-failed", shareId: "share-2", title: "Cached Work" }
+  ],
+  [{ id: "new-ok", shareId: "share-1", title: "New Personal" }],
+  ["share-2"]
+)
+assert.deepStrictEqual(partialMerged.map(function (item) { return item.title }), [
+  "New Personal",
+  "Cached Work"
+])
 
 const suggestedRows = [
   { id: "s1", shareId: "share", title: "Suggested" },

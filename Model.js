@@ -304,20 +304,85 @@ function classifyError(stderr, exitCode) {
   var text = cleanCliText(stderr).toLowerCase()
   if (Number(exitCode) === 127 || text.indexOf("command not found") >= 0 || text.indexOf("no such file") >= 0)
     return "missing"
-  if (text.indexOf("locked") >= 0 || text.indexOf("session lock") >= 0 || text.indexOf("unlock") >= 0)
+  if (
+    text.indexOf("sqlcipher_page_cipher") >= 0
+    || text.indexOf("hmac check failed") >= 0
+    || text.indexOf("sqlite3codec: error decrypting") >= 0
+    || text.indexOf("failed to open encrypted database") >= 0
+    || text.indexOf("file is not a database") >= 0
+    || text.indexOf("encryption key may not match") >= 0
+    || text.indexOf("encryption key mismatch") >= 0
+    || (
+      text.indexOf("database") >= 0
+      && (text.indexOf("decrypt") >= 0 || text.indexOf("decryption") >= 0)
+      && (text.indexOf("key") >= 0 || text.indexOf("sqlite") >= 0 || text.indexOf("codec") >= 0)
+    )
+    || (
+      text.indexOf("database key") >= 0
+      && (
+        text.indexOf("incorrect") >= 0
+        || text.indexOf("invalid") >= 0
+        || text.indexOf("mismatch") >= 0
+        || text.indexOf("wrong") >= 0
+      )
+    )
+  )
+    return "migration-required"
+  if (
+    text.indexOf("session is locked") >= 0
+    || text.indexOf("session lock") >= 0
+    || text.indexOf("unlock the session") >= 0
+    || text.indexOf("pass-cli session unlock") >= 0
+  )
     return "locked"
-  if (text.indexOf("no session") >= 0 || text.indexOf("login") >= 0 || text.indexOf("not logged") >= 0 || text.indexOf("unauthenticated") >= 0 || text.indexOf("unauthorized") >= 0)
+  if (
+    text.indexOf("no session") >= 0
+    || text.indexOf("not logged in") >= 0
+    || text.indexOf("unauthenticated") >= 0
+    || text.indexOf("please login") >= 0
+    || text.indexOf("login first") >= 0
+    || text.indexOf("login required") >= 0
+    || text.indexOf("must login") >= 0
+    || text.indexOf("run pass-cli login") >= 0
+  )
     return "unauthenticated"
   return "error"
 }
 
-function emptyFetchResult(status, message) {
+function parseFetchWarning(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  if (String(value.kind || "") !== "partial-vault-failure") return null
+  var names = Array.isArray(value.failedVaultNames) ? value.failedVaultNames : []
+  var shareIds = Array.isArray(value.failedShareIds) ? value.failedShareIds : []
+  var safeNames = []
+  var safeShareIds = []
+  for (var i = 0; i < names.length; i++) {
+    var name = cleanCliText(names[i]).substring(0, 64)
+    if (name !== "") safeNames.push(name)
+  }
+  for (var j = 0; j < shareIds.length; j++) {
+    var shareId = String(shareIds[j] || "")
+    if (shareId !== "") safeShareIds.push(shareId)
+  }
+  var count = Number(value.failedVaultCount)
+  if (!isFinite(count) || count < 0) count = safeNames.length
+  return {
+    kind: "partial-vault-failure",
+    failedVaultCount: Math.floor(count),
+    failedVaultNames: safeNames,
+    failedShareIds: safeShareIds,
+    message: displayError(value.message || "")
+  }
+}
+
+function emptyFetchResult(status, message, warning) {
   return {
     ok: false,
     status: String(status || "error"),
     message: String(message || ""),
     email: "",
-    items: []
+    items: [],
+    warning: warning || null
   }
 }
 
@@ -326,7 +391,7 @@ function parseFetchResult(raw) {
   if (!parsed || typeof parsed !== "object") return emptyFetchResult("error", "Could not load Proton Pass")
   if (parsed.ok === false) {
     var status = String(parsed.status || classifyError(parsed.stderr || parsed.message || "", parsed.exitCode))
-    return emptyFetchResult(status, parsed.message || parsed.stderr || "")
+    return emptyFetchResult(status, parsed.message || parsed.stderr || "", parseFetchWarning(parsed.warning))
   }
   var rows = asArray(parsed)
   var items = []
@@ -338,10 +403,11 @@ function parseFetchResult(raw) {
   }
   return {
     ok: true,
-    status: "ready",
-    message: "",
+    status: String(parsed.status || "ready") === "partial" ? "partial" : "ready",
+    message: String(parsed.message || ""),
     email: stringField(parsed, ["email", "username"]),
-    items: items
+    items: items,
+    warning: parseFetchWarning(parsed.warning)
   }
 }
 
@@ -407,6 +473,29 @@ function mergeItemLists(previous, incoming) {
     out.push(cached ? mergeItemPreview(item, cached) : item)
   }
   return out
+}
+
+function mergePartialItemLists(previous, incoming, failedShareIds) {
+  var refreshed = mergeItemLists(previous, incoming)
+  var failed = {}
+  var ids = failedShareIds || []
+  for (var i = 0; i < ids.length; i++) {
+    var shareId = String(ids[i] || "")
+    if (shareId !== "") failed[shareId] = true
+  }
+  if (Object.keys(failed).length === 0) return refreshed
+  var seen = {}
+  for (var j = 0; j < refreshed.length; j++) seen[itemKey(refreshed[j])] = true
+  var old = previous || []
+  for (var k = 0; k < old.length; k++) {
+    var item = old[k]
+    var key = itemKey(item)
+    if (item && failed[String(item.shareId || "")] && !seen[key]) {
+      refreshed.push(item)
+      seen[key] = true
+    }
+  }
+  return refreshed
 }
 
 function serializeItem(item) {
@@ -615,6 +704,10 @@ function visiblePreviewWindow(searching, suggested, list, viewport) {
 }
 
 function buildCreateLoginCommand(fields) {
+  return buildCreateLoginRequest(fields).args
+}
+
+function buildCreateLoginRequest(fields) {
   var args = ["item", "create", "login"]
   var data = fields && typeof fields === "object" ? fields : {}
   if (data.shareId) {
@@ -622,11 +715,33 @@ function buildCreateLoginCommand(fields) {
   } else if (data.vaultName) {
     args.push("--vault-name", String(data.vaultName))
   }
+  var password = data.password === undefined || data.password === null ? "" : String(data.password)
+  if (data.generatePassword !== true && password !== "") {
+    var urls = []
+    if (Array.isArray(data.urls)) {
+      for (var i = 0; i < data.urls.length; i++) {
+        var candidate = String(data.urls[i] || "").trim()
+        if (candidate !== "") urls.push(candidate)
+      }
+    } else if (data.url) {
+      urls.push(String(data.url))
+    }
+    args.push("--from-template", "-")
+    return {
+      args: args,
+      stdin: JSON.stringify({
+        title: String(data.title || ""),
+        username: String(data.username || ""),
+        email: String(data.email || ""),
+        password: password,
+        urls: urls
+      }) + "\n"
+    }
+  }
   if (data.title) args.push("--title", String(data.title))
   if (data.username) args.push("--username", String(data.username))
   if (data.email) args.push("--email", String(data.email))
   if (data.generatePassword === true) args.push("--generate-password")
-  else if (data.password) args.push("--password", String(data.password))
   if (data.url) args.push("--url", String(data.url))
-  return args
+  return { args: args, stdin: "" }
 }

@@ -11,6 +11,15 @@ Search and copy Proton Pass logins from the Omarchy bar, in an Apple Passwords-s
 
 The plugin sets `PROTON_PASS_LINUX_KEYRING=dbus` so the session is stored in GNOME Keyring and survives reboots. After installing or switching to this, run `pass-cli login` once more (an old kernel-keyring session will not carry over).
 
+If `pass-cli` reports an SQLCipher HMAC, database decryption, or encryption-key mismatch after switching keyrings, run these one-time recovery commands exactly:
+
+```sh
+PROTON_PASS_LINUX_KEYRING=dbus pass-cli logout --force
+PROTON_PASS_LINUX_KEYRING=dbus pass-cli login
+```
+
+The plugin never runs these commands automatically and never deletes or resets local `pass-cli` state. Until recovery is complete, fetching and secret previews stop and the panel displays the commands above.
+
 On Omarchy / Arch:
 
 ```sh
@@ -44,7 +53,7 @@ Click the key icon in the bar to open or close the panel. Press Escape to close 
 - **Most recent** is last used in this panel (then last modified)
 - Click a row for details (copy username, password, TOTP, URL)
 - Enter copies the password (header shows **Copying…**) and closes when the clipboard is ready
-- `+` adds a new login; the window button opens the Proton Pass app
+- `+` opens a single-page login form with account details, vault selection, password generation, and one Create Login action; the window button opens the Proton Pass app
 - Right-click the bar icon to force-refresh; middle-click opens Proton Pass
 - Login titles, usernames, and URLs are cached on disk (never passwords). The panel opens from cache and refreshes in the background when the cache is older than `cacheMinutes` (default 15).
 
@@ -56,7 +65,7 @@ Click the key icon in the bar to open or close the panel. Press Escape to close 
 - `c`: copy password on the detail view
 - `r`: refresh
 - Escape: back / close
-- On the new-password form, Enter advances fields and saves from Website
+- On the create-login form, Enter advances fields and submits from Password
 
 ## Configure
 
@@ -76,4 +85,4 @@ omarchy plugin remove io.github.cempack.proton-pass
 
 MIT. See [LICENSE](LICENSE).
 
-The plugin talks to a local `pass-cli` process and copies secrets to the clipboard with `wl-copy`. It never writes passwords, TOTP codes, or `--show-secrets` list output to disk or logs. Title, username, and URL metadata may be cached at `~/.cache/omarchy/proton-pass.json`. Omarchy plugins run unsandboxed in the shell process.
+The plugin talks to a local `pass-cli` process and copies secrets to the clipboard with `wl-copy`. User-entered passwords for new logins are serialized as a JSON login template and sent only over the child process's standard input; they are never placed in process arguments. The plugin never writes passwords, TOTP codes, or `--show-secrets` list output to disk or logs. Title, username, and URL metadata may be cached at `~/.cache/omarchy/proton-pass.json`. Omarchy plugins run unsandboxed in the shell process.
