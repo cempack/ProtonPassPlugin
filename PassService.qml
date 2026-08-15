@@ -19,6 +19,7 @@ Item {
   property string status: "idle"  // idle | loading | ready | missing | unauthenticated | locked | migration-required | error
   property string lastError: ""
   property string fetchWarning: ""
+  property var fetchWarningMetadata: null
   property string email: ""
   property var items: []
   property string copiedMessage: ""
@@ -57,6 +58,9 @@ Item {
   property string _copyError: ""
   property string _viewOutput: ""
   property string _viewError: ""
+  property int _viewGeneration: 0
+  property int _viewProcessGeneration: 0
+  property bool _discardViewResult: true
   property string _previewOutput: ""
   property string _previewError: ""
   property string _createError: ""
@@ -98,7 +102,15 @@ Item {
     return Model.displayError(text)
   }
 
-  function resetViewed() {
+  function resetViewed(forceKill) {
+    _viewGeneration = _viewGeneration + 1
+    _discardViewResult = true
+    viewWatchdog.stop()
+    if (viewProcess.running) {
+      if (forceKill === true) viewProcess.signal(9)
+      else viewProcess.signal(15)
+      viewProcess.running = false
+    }
     viewedValue = ""
     viewedField = ""
     viewing = false
@@ -137,11 +149,9 @@ Item {
   function handleViewTimeout() {
     if (!viewProcess.running) return
     _viewTimedOut = true
-    resetViewed()
+    resetViewed(true)
     var message = timeoutMessage("Secret lookup")
     lastError = message
-    viewProcess.signal(9)
-    viewProcess.running = false
   }
 
   function handlePreviewTimeout() {
@@ -242,6 +252,7 @@ Item {
     if (kind === "ready") {
       _previewSessionBlocked = false
       _failedPreviewKeys = Model.clearFailedPreviewKeys()
+      if (previewsEnabled) previewTimer.restart()
     }
   }
 
@@ -275,7 +286,7 @@ Item {
 
   function refresh(force, silent) {
     if (fetchProcess.running) return
-    if (status === "migration-required" && force !== true) return
+    if (Model.isSessionBlockingStatus(status) && force !== true) return
     if (force !== true && !isStale()) return
     if (force !== true && isPeerRefreshing()) return
     if (force === true)
@@ -303,9 +314,17 @@ Item {
     _peerRefreshingAt = parsed.refreshingAt || 0
     _cacheHydrated = true
     if (parsed.ok && parsed.fetchedAt >= fetchedAt) {
+      var previousFetchedAt = fetchedAt
       email = parsed.email || email
       items = Model.mergeItemLists(items, parsed.items)
       fetchedAt = parsed.fetchedAt
+      if (parsed.warning) {
+        fetchWarningMetadata = parsed.warning
+        fetchWarning = String(parsed.warning.message || "")
+      } else if (parsed.fetchedAt > previousFetchedAt) {
+        fetchWarningMetadata = null
+        fetchWarning = ""
+      }
       if (items.length > 0 || parsed.fetchedAt > 0) {
         installed = true
         if (status === "idle" || status === "loading") applyStatus("ready", "")
@@ -333,7 +352,7 @@ Item {
     var started = refreshingAt !== undefined && refreshingAt !== null ? Number(refreshingAt) : _pendingRefreshingAt
     if (!isFinite(started)) started = 0
     _pendingRefreshingAt = started
-    var doc = Model.serializeCache(email, fetchedAt, items, started)
+    var doc = Model.serializeCache(email, fetchedAt, items, started, fetchWarningMetadata)
     var text = JSON.stringify(doc) + "\n"
     if (text === _lastCacheText) return
     _lastCacheText = text
@@ -433,6 +452,8 @@ Item {
     viewing = true
     _viewOutput = ""
     _viewError = ""
+    _viewProcessGeneration = _viewGeneration
+    _discardViewResult = false
     viewProcess.command = [root.passCli, "item", "view", uri]
     _viewTimedOut = false
     viewWatchdog.restart()
@@ -499,15 +520,26 @@ Item {
     _failedPreviewKeys = Model.rememberFailedPreviewKey(_failedPreviewKeys, key, 64)
   }
 
-  function blockPreviewSession(kind, stderr) {
+  function latchSessionBlockingFailure(kind, stderr) {
+    if (!Model.isSessionBlockingStatus(kind)) return false
     _previewSessionBlocked = true
-    if (previewProcess.running) previewProcess.running = false
-    stopPreviews()
+    previewWatchdog.stop()
+    previewTimer.stop()
+    previewMergeTimer.stop()
+    if (previewProcess.running) {
+      previewProcess.signal(15)
+      previewProcess.running = false
+    }
+    _previewItem = null
+    _previewQueue = []
+    _urgentPreviewKey = ""
+    previewing = false
+    _previewOutput = ""
+    _previewError = ""
+    _pendingPreviewUpdates = ({})
     var message = statusMessageFor(kind, stderr)
-    if (lastError === "" || status !== kind)
-      applyStatus(kind, message)
-    else
-      lastError = message
+    applyStatus(kind, message)
+    return true
   }
 
   function queuePreviewUpdate(item, preview, urgent) {
@@ -725,17 +757,21 @@ Item {
       if (exitCode !== 0 && !parsed.ok) {
         var kind = parsed.status && parsed.status !== "error" ? parsed.status : Model.classifyError(stderr || stdout, exitCode)
         var failureMessage = root.statusMessageFor(kind, parsed.message || stderr || stdout)
-        if (kind === "migration-required") root.blockPreviewSession(kind, parsed.message || stderr || stdout)
-        else if (root.items.length === 0) root.applyStatus(kind, failureMessage)
-        else root.lastError = failureMessage
+        var blocked = root.latchSessionBlockingFailure(kind, parsed.message || stderr || stdout)
+        if (!blocked) {
+          if (root.items.length === 0) root.applyStatus(kind, failureMessage)
+          else root.lastError = failureMessage
+        }
         root.writeCache(0)
         return
       }
       if (!parsed.ok) {
         var parsedMessage = root.statusMessageFor(parsed.status, parsed.message)
-        if (parsed.status === "migration-required") root.blockPreviewSession(parsed.status, parsed.message)
-        else if (root.items.length === 0) root.applyStatus(parsed.status, parsedMessage)
-        else root.lastError = parsedMessage
+        var parsedBlocked = root.latchSessionBlockingFailure(parsed.status, parsed.message)
+        if (!parsedBlocked) {
+          if (root.items.length === 0) root.applyStatus(parsed.status, parsedMessage)
+          else root.lastError = parsedMessage
+        }
         root.writeCache(0)
         return
       }
@@ -746,10 +782,13 @@ Item {
         ? Model.mergePartialItemLists(root.items, parsed.items, warning ? warning.failedShareIds : [])
         : Model.mergeItemLists(root.items, parsed.items)
       root.fetchedAt = Date.now()
-      if (parsed.status === "partial")
+      if (parsed.status === "partial" && warning) {
+        root.fetchWarningMetadata = warning
         root.fetchWarning = warning ? String(warning.message || "") : ""
-      else
+      } else if (parsed.status !== "partial") {
+        root.fetchWarningMetadata = null
         root.fetchWarning = ""
+      }
       root.applyStatus("ready", "")
       root.writeCache(0)
     }
@@ -787,7 +826,7 @@ Item {
         }
         var kind = Model.classifyError(stderr, exitCode)
         var message = root.statusMessageFor(kind, stderr)
-        if (Model.isSessionBlockingStatus(kind)) root.blockPreviewSession(kind, stderr)
+        root.latchSessionBlockingFailure(kind, stderr)
         root.copiedMessage = ""
         root.lastError = message
         root.copyFailed(message)
@@ -803,18 +842,31 @@ Item {
     environment: root.passCliEnvironment
     stdout: SplitParser {
       splitMarker: ""
-      onRead: function(data) { root._viewOutput = root.appendBounded(root._viewOutput, data, 8192) }
+      onRead: function(data) {
+        if (root._discardViewResult || root._viewProcessGeneration !== root._viewGeneration) return
+        root._viewOutput = root.appendBounded(root._viewOutput, data, 8192)
+      }
     }
-    stderr: StdioCollector { id: viewStderr; waitForEnd: true; onStreamFinished: root._viewError = text }
+    stderr: StdioCollector {
+      id: viewStderr
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root._discardViewResult && root._viewProcessGeneration === root._viewGeneration)
+          root._viewError = text
+      }
+    }
     onRunningChanged: {
       if (!running) Qt.callLater(function() { root.handleViewLaunchFailure() })
     }
     onExited: function(exitCode) {
       viewWatchdog.stop()
+      var completedGeneration = root._viewProcessGeneration
+      var discard = root._discardViewResult || completedGeneration !== root._viewGeneration
       if (root._viewTimedOut) {
         root._viewTimedOut = false
         root._viewOutput = ""
         root._viewError = ""
+        root._discardViewResult = true
         return
       }
       root.viewing = false
@@ -822,14 +874,17 @@ Item {
       var stderr = String(viewStderr.text || root._viewError || "")
       root._viewOutput = ""
       root._viewError = ""
+      root._discardViewResult = true
+      if (discard) return
       if (exitCode === 0) {
         root.lastError = ""
         root.viewedValue = stdout.replace(/\n$/, "")
       } else {
-        root.resetViewed()
+        root.viewedValue = ""
+        root.viewedField = ""
         var kind = Model.classifyError(stderr, exitCode)
-        if (kind === "migration-required") root.blockPreviewSession(kind, stderr)
-        else root.lastError = root.statusMessageFor(kind, stderr)
+        if (!root.latchSessionBlockingFailure(kind, stderr))
+          root.lastError = root.statusMessageFor(kind, stderr)
       }
     }
   }
@@ -869,11 +924,12 @@ Item {
         if (preview) {
           root.lastError = ""
           root.queuePreviewUpdate(root.findItem(target) || target, preview, urgent)
+        } else {
+          root.markPreviewFailed(Model.itemKey(target))
         }
       } else if (target) {
         var kind = Model.classifyError(stderr || stdout, exitCode)
-        if (Model.isSessionBlockingStatus(kind)) {
-          root.blockPreviewSession(kind, stderr || stdout)
+        if (root.latchSessionBlockingFailure(kind, stderr || stdout)) {
           return
         }
         root.markPreviewFailed(Model.itemKey(target))
@@ -920,8 +976,8 @@ Item {
         var stderr = String(createStderr.text || root._createError || "")
         var kind = Model.classifyError(stderr, exitCode)
         var message = root.statusMessageFor(kind, stderr)
-        if (kind === "migration-required") root.blockPreviewSession(kind, stderr)
-        else root.lastError = message
+        if (!root.latchSessionBlockingFailure(kind, stderr))
+          root.lastError = message
         root.createFailed(message)
       }
       root._createError = ""
@@ -954,12 +1010,17 @@ Item {
       var stderr = String(generateStderr.text || root._generateError || "")
       root._generateOutput = ""
       root._generateError = ""
-      if (exitCode === 0 && stdout !== "") {
-        root.passwordGenerated(stdout)
-      } else if (exitCode !== 0) {
+      if (exitCode === 0) {
+        if (stdout !== "") {
+          root.lastError = ""
+          root.passwordGenerated(stdout)
+        } else {
+          root.lastError = "Password generation returned no password."
+        }
+      } else {
         var kind = Model.classifyError(stderr || stdout, exitCode)
-        if (kind === "migration-required") root.blockPreviewSession(kind, stderr || stdout)
-        else root.lastError = root.statusMessageFor(kind, stderr || stdout)
+        if (!root.latchSessionBlockingFailure(kind, stderr || stdout))
+          root.lastError = root.statusMessageFor(kind, stderr || stdout)
       }
     }
   }

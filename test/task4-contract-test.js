@@ -93,7 +93,7 @@ assert.doesNotMatch(copyProcessSource, /stdout:\s*StdioCollector/, "copied secre
 assert.match(copyProcessSource, /classifyError/, "copy pipeline stderr remains classifiable")
 assert.match(
   copyProcessSource,
-  /isSessionBlockingStatus\(kind\)[\s\S]*blockPreviewSession/,
+  /latchSessionBlockingFailure\(kind,\s*stderr\)/,
   "copy failures apply migration, locked, and unauthenticated session states"
 )
 
@@ -154,7 +154,7 @@ assert.match(serviceSource, /migration-required/, "migration status is handled b
 assert.match(panelSource, /migration-required/, "migration status blocks the normal panel flow")
 assert.match(
   serviceSource,
-  /function blockPreviewSession[\s\S]*previewProcess\.running\s*=\s*false/,
+  /function latchSessionBlockingFailure[\s\S]*previewProcess\.running\s*=\s*false/,
   "migration handling terminates an in-flight preview"
 )
 assert.match(

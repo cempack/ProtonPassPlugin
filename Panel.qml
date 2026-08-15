@@ -50,8 +50,9 @@ Panel {
     return out
   }
   readonly property var emptyItems: []
+  readonly property int suggestedLimit: 6
   readonly property bool searching: String(debouncedFilter).trim() !== ""
-  readonly property var suggested: Model.suggestedItems(pass.items, snapshotAppId, snapshotTitle)
+  readonly property var suggested: Model.suggestedItems(pass.items, snapshotAppId, snapshotTitle, suggestedLimit)
   readonly property var rankedItems: Model.recentlyUsed(pass.items)
   readonly property var recent: Model.withoutItems(rankedItems, suggested)
   readonly property var filtered: searching ? Model.searchItems(rankedItems, debouncedFilter) : emptyItems

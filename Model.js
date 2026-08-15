@@ -211,7 +211,7 @@ function searchItems(items, query) {
   return out
 }
 
-function suggestedItems(items, appId, title) {
+function suggestedItems(items, appId, title, limit) {
   var hint = (String(appId || "") + " " + String(title || "")).trim().toLowerCase()
   if (!hint) return []
   var list = items || []
@@ -231,7 +231,9 @@ function suggestedItems(items, appId, title) {
     }
     if (matched) out.push(item)
   }
-  return out
+  var cap = parseInt(limit, 10)
+  if (!isFinite(cap) || cap < 0) return out
+  return out.slice(0, cap)
 }
 
 function recentlyCreated(items, limit) {
@@ -349,6 +351,15 @@ function classifyError(stderr, exitCode) {
   return "error"
 }
 
+function fetchWarningMessage(count, names) {
+  var failedCount = Number(count)
+  if (!isFinite(failedCount) || failedCount < 0) failedCount = 0
+  failedCount = Math.floor(failedCount)
+  var noun = failedCount === 1 ? "vault" : "vaults"
+  var suffix = names && names.length > 0 ? ": " + names.join(", ") : ""
+  return "Could not refresh " + failedCount + " " + noun + suffix + "."
+}
+
 function parseFetchWarning(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   if (String(value.kind || "") !== "partial-vault-failure") return null
@@ -356,22 +367,23 @@ function parseFetchWarning(value) {
   var shareIds = Array.isArray(value.failedShareIds) ? value.failedShareIds : []
   var safeNames = []
   var safeShareIds = []
-  for (var i = 0; i < names.length; i++) {
+  for (var i = 0; i < names.length && safeNames.length < 32; i++) {
     var name = cleanCliText(names[i]).substring(0, 64)
     if (name !== "") safeNames.push(name)
   }
-  for (var j = 0; j < shareIds.length; j++) {
-    var shareId = String(shareIds[j] || "")
+  for (var j = 0; j < shareIds.length && safeShareIds.length < 32; j++) {
+    var shareId = cleanCliText(shareIds[j]).substring(0, 128)
     if (shareId !== "") safeShareIds.push(shareId)
   }
   var count = Number(value.failedVaultCount)
   if (!isFinite(count) || count < 0) count = safeNames.length
+  count = Math.floor(count)
   return {
     kind: "partial-vault-failure",
-    failedVaultCount: Math.floor(count),
+    failedVaultCount: count,
     failedVaultNames: safeNames,
     failedShareIds: safeShareIds,
-    message: displayError(value.message || "")
+    message: fetchWarningMessage(count, safeNames)
   }
 }
 
@@ -518,7 +530,7 @@ function serializeItem(item) {
   }
 }
 
-function serializeCache(email, fetchedAt, items, refreshingAt) {
+function serializeCache(email, fetchedAt, items, refreshingAt, warning) {
   var out = []
   var list = items || []
   for (var i = 0; i < list.length; i++) {
@@ -529,13 +541,19 @@ function serializeCache(email, fetchedAt, items, refreshingAt) {
   if (!isFinite(at)) at = 0
   var refreshing = Number(refreshingAt)
   if (!isFinite(refreshing)) refreshing = 0
-  return { email: String(email || ""), fetchedAt: at, refreshingAt: refreshing, items: out }
+  return {
+    email: String(email || ""),
+    fetchedAt: at,
+    refreshingAt: refreshing,
+    warning: parseFetchWarning(warning),
+    items: out
+  }
 }
 
 function parseCache(raw) {
   var parsed = parseJson(raw)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    return { ok: false, email: "", fetchedAt: 0, items: [] }
+    return { ok: false, email: "", fetchedAt: 0, refreshingAt: 0, warning: null, items: [] }
   var rows = asArray(parsed)
   var items = []
   for (var i = 0; i < rows.length; i++) {
@@ -552,6 +570,7 @@ function parseCache(raw) {
     email: stringField(parsed, ["email"]),
     fetchedAt: fetchedAt,
     refreshingAt: refreshingAt,
+    warning: parseFetchWarning(parsed.warning),
     items: items
   }
 }
