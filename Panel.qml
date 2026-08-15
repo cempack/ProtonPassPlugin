@@ -295,6 +295,10 @@ Panel {
     return String(item.urls[0] || "")
   }
 
+  function maskedSecret() {
+    return "••••••••"
+  }
+
   function requestVisiblePreviews() {
     if (!root.opened || !root.showList) return
     pass.requestPreviews(visiblePreviewWindow())
