@@ -54,8 +54,9 @@ Panel {
   }
   readonly property bool searching: String(filterText).trim() !== ""
   readonly property var suggested: Model.suggestedItems(pass.items, activeAppId, activeTitle)
-  readonly property var recent: Model.withoutItems(Model.recentlyUsed(pass.items), suggested)
-  readonly property var filtered: Model.searchItems(Model.recentlyUsed(pass.items), filterText)
+  readonly property var rankedItems: Model.recentlyUsed(pass.items)
+  readonly property var recent: Model.withoutItems(rankedItems, suggested)
+  readonly property var filtered: Model.searchItems(rankedItems, filterText)
   readonly property var cursorItems: searching ? filtered : combineItems(suggested, recent)
   readonly property bool listReady: pass.status === "ready" || pass.items.length > 0
   readonly property bool showList: listReady && viewMode === "list"
@@ -262,32 +263,17 @@ Panel {
   }
 
   function scrollItemIntoView(item) {
-    if (!panelFlick || !item) return
-    Qt.callLater(function() {
-      if (!item) return
-      var margin = Style.space(6)
-      var point = item.mapToItem(panelFlick.contentItem, 0, 0)
-      var top = point.y
-      var bottom = top + item.height
-      var viewTop = panelFlick.contentY
-      var viewBottom = viewTop + panelFlick.height
-      var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
-      if (top < viewTop + margin) panelFlick.contentY = Math.max(0, top - margin)
-      else if (bottom > viewBottom - margin) panelFlick.contentY = Math.min(maxY, bottom + margin - panelFlick.height)
-    })
+    root.scrollCursorIntoView()
   }
 
   function scrollCursorIntoView() {
-    if (!listColumn) return
-    var target = null
-    for (var i = 0; i < listColumn.children.length; i++) {
-      var child = listColumn.children[i]
-      if (child && child.cursorIndex === selectedIndex) {
-        target = child
-        break
-      }
+    if (!listView) return
+    if (!root.searching && selectedIndex < root.suggested.length) {
+      listView.positionViewAtBeginning()
+      return
     }
-    if (target) scrollItemIntoView(target)
+    var idx = root.searching ? selectedIndex : selectedIndex - root.suggested.length
+    if (idx >= 0) listView.positionViewAtIndex(idx, ListView.Contain)
   }
 
   readonly property string maskedSecret: "••••••••"
@@ -303,20 +289,26 @@ Panel {
   }
 
   function visiblePreviewWindow() {
-    var list = cursorItems || []
-    if (list.length === 0) return []
-    var row = Math.max(1, Style.space(44))
-    var start = 0
-    var count = 10
-    if (panelFlick && panelFlick.height > 0) {
-      start = Math.floor(panelFlick.contentY / row)
-      count = Math.ceil(panelFlick.height / row) + 2
+    var out = []
+    if (!root.searching) {
+      var suggestedItems = root.suggested || []
+      for (var i = 0; i < suggestedItems.length; i++) out.push(suggestedItems[i])
     }
-    if (start < 0) start = 0
-    if (start > list.length) start = Math.max(0, list.length - 1)
-    if (count < 8) count = 8
-    if (count > 12) count = 12
-    return list.slice(start, start + count)
+    var list = root.searching ? (root.filtered || []) : (root.recent || [])
+    if (list.length === 0) return out
+    var start = 0
+    var last = Math.min(list.length - 1, 11)
+    if (listView && listView.height > 0) {
+      var top = listView.indexAt(1, listView.contentY + 1)
+      var bottom = listView.indexAt(1, listView.contentY + listView.height - 1)
+      if (top < 0) top = Math.floor(Math.max(0, listView.contentY) / Math.max(1, Style.space(44)))
+      if (bottom < top) bottom = top + 11
+      start = Math.max(0, top)
+      last = Math.min(list.length - 1, bottom)
+      if (last - start > 11) last = start + 11
+    }
+    for (var j = start; j <= last; j++) out.push(list[j])
+    return out
   }
 
   function previewHovered(item) {
@@ -326,11 +318,13 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
-      resetSession(false)
-      if (panelFlick) panelFlick.contentY = 0
+      if (listView) listView.positionViewAtBeginning()
       focusSearch()
-      pass.previewsEnabled = true
-      Qt.callLater(function() { if (root.opened) root.requestVisiblePreviews() })
+      Qt.callLater(function() {
+        if (!root.opened) return
+        pass.previewsEnabled = true
+        root.requestVisiblePreviews()
+      })
     } else {
       pass.stopPreviews()
     }
@@ -552,139 +546,78 @@ Panel {
           }
         }
 
-        Flickable {
-          id: panelFlick
+        Item {
+          id: body
           anchors.top: chrome.bottom
           anchors.topMargin: chrome.height > 0 ? Style.space(8) : 0
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
-          contentWidth: width
-          contentHeight: column.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
-          interactive: contentHeight > height
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-          onContentYChanged: previewScrollTimer.restart()
 
-          Column {
-            id: column
-            width: panelFlick.width
-            spacing: Style.space(10)
-
-          Column {
-            id: listColumn
+          ListView {
+            id: listView
             visible: root.showList && root.statusHint === ""
-            width: parent.width
-            spacing: Style.space(8)
+            anchors.fill: parent
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            reuseItems: true
+            cacheBuffer: Style.space(160)
+            model: root.searching ? root.filtered : root.recent
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            onContentYChanged: previewScrollTimer.restart()
 
-            Column {
-              visible: !root.searching && root.suggested.length > 0
-              width: parent.width
-              spacing: Style.space(4)
+            header: Column {
+              width: listView.width
+              spacing: Style.space(8)
+              visible: !root.searching
+              height: visible ? implicitHeight : 0
 
-              PanelSectionHeader {
-                text: "SUGGESTED"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
+              Column {
+                visible: root.suggested.length > 0
+                width: parent.width
+                spacing: Style.space(4)
 
-              Repeater {
-                model: root.suggested
-                ItemRow {
-                  required property var modelData
-                  required property int index
-                  property int cursorIndex: index
-                  width: listColumn.width
-                  item: modelData
-                  rowIndex: index
-                  hasCursor: root.cursorActive && root.selectedIndex === cursorIndex
+                PanelSectionHeader {
+                  text: "SUGGESTED"
                   foreground: root.foreground
-                  dim: root.dim
                   fontFamily: root.fontFamily
-                  onHovered: {
-                    root.cursorActive = true
-                    root.selectedIndex = cursorIndex
-                    root.previewHovered(modelData)
+                }
+
+                Repeater {
+                  model: root.suggested
+                  LoginRow {
+                    required property var modelData
+                    required property int index
+                    width: listView.width
+                    item: modelData
+                    cursorIndex: index
                   }
-                  onActivated: root.openDetail(modelData)
-                  onHasCursorChanged: if (hasCursor && root.cursorActive) root.scrollItemIntoView(this)
                 }
               }
-            }
-
-            Column {
-              visible: !root.searching && root.recent.length > 0
-              width: parent.width
-              spacing: Style.space(4)
 
               PanelSectionHeader {
+                visible: root.recent.length > 0
                 text: "MOST RECENT"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
-
-              Repeater {
-                model: root.recent
-                ItemRow {
-                  required property var modelData
-                  required property int index
-                  property int cursorIndex: root.suggested.length + index
-                  width: listColumn.width
-                  item: modelData
-                  rowIndex: index
-                  hasCursor: root.cursorActive && root.selectedIndex === cursorIndex
-                  foreground: root.foreground
-                  dim: root.dim
-                  fontFamily: root.fontFamily
-                  onHovered: {
-                    root.cursorActive = true
-                    root.selectedIndex = cursorIndex
-                    root.previewHovered(modelData)
-                  }
-                  onActivated: root.openDetail(modelData)
-                  onHasCursorChanged: if (hasCursor && root.cursorActive) root.scrollItemIntoView(this)
-                }
-              }
             }
 
-            Column {
-              visible: root.searching
-              width: parent.width
-              spacing: Style.space(4)
+            delegate: LoginRow {
+              required property var modelData
+              required property int index
+              width: listView.width
+              item: modelData
+              cursorIndex: root.searching ? index : root.suggested.length + index
+            }
 
-              Repeater {
-                model: root.filtered
-                ItemRow {
-                  required property var modelData
-                  required property int index
-                  property int cursorIndex: index
-                  width: listColumn.width
-                  item: modelData
-                  rowIndex: index
-                  hasCursor: root.cursorActive && root.selectedIndex === cursorIndex
-                  foreground: root.foreground
-                  dim: root.dim
-                  fontFamily: root.fontFamily
-                  onHovered: {
-                    root.cursorActive = true
-                    root.selectedIndex = cursorIndex
-                    root.previewHovered(modelData)
-                  }
-                  onActivated: root.openDetail(modelData)
-                  onHasCursorChanged: if (hasCursor && root.cursorActive) root.scrollItemIntoView(this)
-                }
-              }
-
-              Text {
-                visible: root.filtered.length === 0
-                width: parent.width
-                text: "No matching logins."
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-              }
+            footer: Text {
+              visible: root.searching && root.filtered.length === 0
+              width: listView.width
+              text: "No matching logins."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
             }
           }
 
@@ -878,6 +811,19 @@ Panel {
         }
       }
     }
+
+  component LoginRow: ItemRow {
+    property int cursorIndex: 0
+    hasCursor: root.cursorActive && root.selectedIndex === cursorIndex
+    foreground: root.foreground
+    dim: root.dim
+    fontFamily: root.fontFamily
+    onHovered: {
+      root.cursorActive = true
+      root.selectedIndex = cursorIndex
+      root.previewHovered(item)
+    }
+    onActivated: root.openDetail(item)
   }
 
   component FieldRow: CursorSurface {

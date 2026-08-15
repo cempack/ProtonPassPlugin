@@ -8,6 +8,7 @@ CursorSurface {
   id: root
 
   property var item: null
+  property bool hasCursor: false
   property int rowIndex: 0
   property color dim: Qt.darker(foreground, 1.55)
   property string fontFamily: Style.font.family
