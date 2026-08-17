@@ -1,0 +1,4 @@
+{
+  "name": "Proton Pass Omarchy Plugin",
+  "install": "node --version && python3 --version"
+}
