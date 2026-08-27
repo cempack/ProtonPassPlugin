@@ -112,6 +112,9 @@ def classify(stderr: str, code: int) -> str:
         or "login required" in text
         or "must login" in text
         or "run pass-cli login" in text
+        or "pass-cli login" in text
+        or "local encryption key not found" in text
+        or "forcing logout" in text
     ):
         return "unauthenticated"
     return "error"
@@ -159,8 +162,7 @@ def list_vault_items(cli: str, vault: dict) -> dict:
         [
             "item",
             "list",
-            "--share-id",
-            share_id,
+            f"--share-id={share_id}",
             "--filter-type",
             "login",
             "--filter-state",

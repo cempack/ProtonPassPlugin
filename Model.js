@@ -346,6 +346,9 @@ function classifyError(stderr, exitCode) {
     || text.indexOf("login required") >= 0
     || text.indexOf("must login") >= 0
     || text.indexOf("run pass-cli login") >= 0
+    || text.indexOf("pass-cli login") >= 0
+    || text.indexOf("local encryption key not found") >= 0
+    || text.indexOf("forcing logout") >= 0
   )
     return "unauthenticated"
   return "error"
@@ -737,6 +740,13 @@ function createLoginUrls(data) {
   return urls
 }
 
+function clipboardClearDelayMs(seconds) {
+  var value = parseInt(String(seconds), 10)
+  if (!isFinite(value) || value < 0) value = 0
+  if (value > 300) value = 300
+  return value * 1000
+}
+
 function buildCreateLoginCommand(fields) {
   return buildCreateLoginRequest(fields).args
 }
@@ -745,7 +755,7 @@ function buildCreateLoginRequest(fields) {
   var args = ["item", "create", "login"]
   var data = fields && typeof fields === "object" ? fields : {}
   if (data.shareId) {
-    args.push("--share-id", String(data.shareId))
+    args.push("--share-id=" + String(data.shareId))
   } else if (data.vaultName) {
     args.push("--vault-name", String(data.vaultName))
   }

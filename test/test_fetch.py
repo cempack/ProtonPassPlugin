@@ -22,6 +22,15 @@ if str(ROOT) not in sys.path:
 import fetch  # noqa: E402
 
 
+def share_id_from_args(args: list[str]) -> str:
+    for arg in args:
+        if arg.startswith("--share-id="):
+            return arg.split("=", 1)[1]
+    if "--share-id" in args:
+        return args[args.index("--share-id") + 1]
+    raise AssertionError(f"missing share-id in {args}")
+
+
 def _login_item(item_id: str, share_id: str, title: str) -> dict:
     return {
         "id": item_id,
@@ -273,7 +282,12 @@ class ClassificationTests(unittest.TestCase):
                 self.assertEqual(fetch.classify(message, 1), "error")
 
     def test_precise_session_messages_remain_unauthenticated(self) -> None:
-        for message in ["Please login first", "There is no session", "Not logged in"]:
+        for message in [
+            "Please login first",
+            "There is no session",
+            "Not logged in",
+            "Error: Local encryption key not found but local data exists. Forcing logout for security.\nRun 'pass-cli login' to authenticate again.",
+        ]:
             with self.subTest(message=message):
                 self.assertEqual(fetch.classify(message, 1), "unauthenticated")
 
@@ -310,7 +324,7 @@ class PartialVaultTests(FetchTestCase):
             if args[:2] == ["vault", "list"]:
                 return vaults
             if args[:2] == ["item", "list"]:
-                share = args[args.index("--share-id") + 1]
+                share = share_id_from_args(args)
                 if share == "share-ok":
                     return ok_items
                 if share == "share-bad":
@@ -357,7 +371,7 @@ class PartialVaultTests(FetchTestCase):
                 return info
             if args[:2] == ["vault", "list"]:
                 return vaults
-            share = args[args.index("--share-id") + 1]
+            share = share_id_from_args(args)
             if share == "ok":
                 return subprocess.CompletedProcess(
                     args, 0, json.dumps({"items": [_login_item("item-1", "ok", "GitHub")]}), ""
@@ -427,6 +441,25 @@ class PartialVaultTests(FetchTestCase):
         self.assertEqual(payload.get("status"), "error")
         self.assertEqual((payload.get("warning") or {}).get("failedVaultNames"), ["Broken"])
         self.assertNotIn("private backend detail", json.dumps(payload))
+
+    def test_share_id_starting_with_dash_is_joined_to_flag(self) -> None:
+        share_id = "-XMlw7-WpkQabc"
+        vault = {"share_id": share_id, "name": "Personal"}
+        captured: list[list[str]] = []
+
+        def fake_run(cli: str, args: list[str], timeout=None):
+            captured.append(list(args))
+            return subprocess.CompletedProcess(args, 0, '{"items":[]}', "")
+
+        with mock.patch.object(fetch, "run_cli", side_effect=fake_run):
+            result = fetch.list_vault_items("pass-cli", vault)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(len(captured), 1)
+        args = captured[0]
+        self.assertIn(f"--share-id={share_id}", args)
+        self.assertNotIn("--share-id", args)
+        self.assertNotIn(share_id, args)
 
 
 if __name__ == "__main__":

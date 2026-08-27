@@ -92,6 +92,22 @@ assert.ok(
   !manifest.barWidget.schema.some(function (entry) { return entry.key === "maxRecent" }),
   "manifest schema must not expose maxRecent"
 )
+assert.strictEqual(
+  manifest.barWidget.defaults.clipboardClearSeconds,
+  0,
+  "clipboard clear stays off by default"
+)
+var clipboardClearSchema = manifest.barWidget.schema.find(function (entry) { return entry.key === "clipboardClearSeconds" })
+assert.ok(clipboardClearSchema, "clipboard clear is a widget setting")
+assert.strictEqual(clipboardClearSchema.type, "integer")
+assert.strictEqual(clipboardClearSchema.min, 0)
+assert.strictEqual(clipboardClearSchema.max, 300)
+assert.strictEqual(clipboardClearSchema.defaultValue, 0)
+assert.match(
+  passServiceSource,
+  /clipboardClearDelayMs\(setting\("clipboardClearSeconds",\s*0\)\)/,
+  "PassService reads clipboardClearSeconds with a 0 fallback"
+)
 assert.doesNotMatch(readmeSource, /maxRecent/, "README must not document maxRecent")
 
 assert.match(panelSource, /snapshotAppId|snapshottedAppId|contextAppId/, "panel snapshots active app id on open")

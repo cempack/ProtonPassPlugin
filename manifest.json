@@ -18,7 +18,8 @@
     "defaultSection": "right",
     "defaults": {
       "passCliPath": "pass-cli",
-      "cacheMinutes": 15
+      "cacheMinutes": 15,
+      "clipboardClearSeconds": 0
     },
     "schema": [
       {
@@ -37,6 +38,16 @@
         "step": 1,
         "defaultValue": 15,
         "description": "How long login titles stay on disk before a background refresh. Opening the panel always uses the cache; passwords are never stored."
+      },
+      {
+        "key": "clipboardClearSeconds",
+        "type": "integer",
+        "label": "Clipboard clear (seconds)",
+        "min": 0,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 0,
+        "description": "Clear the clipboard this many seconds after copying a login. 0 leaves the clipboard until something else overwrites it."
       }
     ]
   }

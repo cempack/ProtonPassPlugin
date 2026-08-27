@@ -18,7 +18,7 @@ PROTON_PASS_LINUX_KEYRING=dbus pass-cli logout --force
 PROTON_PASS_LINUX_KEYRING=dbus pass-cli login
 ```
 
-The plugin never runs these commands automatically and never deletes or resets local `pass-cli` state. Until recovery is complete, fetching and secret previews stop and the panel displays the commands above.
+The plugin never runs these commands automatically and never deletes or resets local `pass-cli` state. Until recovery is complete, fetching and secret previews stop and the panel asks you to run `pass-cli login`, then right-click the bar icon to refresh.
 
 On Omarchy / Arch:
 
@@ -52,7 +52,7 @@ Click the key icon in the bar to open or close the panel. Press Escape to close 
 - **Suggested** matches the active window
 - **Most recent** is last used in this panel (then last modified)
 - Click a row for details (copy username, password, TOTP, URL)
-- Enter copies the password (header shows **Copying…**) and closes when the clipboard is ready
+- Enter copies the password (header shows **Copying…**) and closes when the clipboard is ready. Copied secrets stay on the clipboard until something overwrites them unless `clipboardClearSeconds` is set above 0.
 - `+` opens a single-page login form with account details, vault selection, password generation, and one Create Login action; the window button opens the Proton Pass app
 - Right-click the bar icon to force-refresh; middle-click opens Proton Pass
 - Login titles, usernames, and URLs are cached on disk (never passwords). The panel opens from cache and refreshes in the background when the cache is older than `cacheMinutes` (default 15).
@@ -73,7 +73,7 @@ Click the key icon in the bar to open or close the panel. Press Escape to close 
 omarchy bar move io.github.cempack.proton-pass --section right
 ```
 
-Widget settings (`passCliPath`, `cacheMinutes`) live on the plugin's bar entry in `~/.config/omarchy/shell.json`. Metadata cache is `~/.cache/omarchy/proton-pass.json`.
+Widget settings (`passCliPath`, `cacheMinutes`, `clipboardClearSeconds`) live on the plugin's bar entry in `~/.config/omarchy/shell.json`. Metadata cache is `~/.cache/omarchy/proton-pass.json`. `clipboardClearSeconds` is 0 (off) by default; set it to clear the clipboard that many seconds after a copy.
 
 ## Remove
 
@@ -85,4 +85,4 @@ omarchy plugin remove io.github.cempack.proton-pass
 
 MIT. See [LICENSE](LICENSE).
 
-The plugin talks to a local `pass-cli` process and copies secrets to the clipboard with `wl-copy`. User-entered passwords for new logins are serialized as a JSON login template and sent only over the child process's standard input; they are never placed in process arguments. Blank-password creation generates a password first, then sends that value over stdin with the rest of the login template. Username and URL clipboard copies also send the text to `wl-copy` over stdin rather than command-line arguments. The plugin never writes passwords, TOTP codes, or `--show-secrets` list output to disk or logs. Title, username, and URL metadata may be cached at `~/.cache/omarchy/proton-pass.json`. Omarchy plugins run unsandboxed in the shell process.
+The plugin talks to a local `pass-cli` process and copies secrets to the clipboard with `wl-copy`. User-entered passwords for new logins are serialized as a JSON login template and sent only over the child process's standard input; they are never placed in process arguments. Blank-password creation generates a password first, then sends that value over stdin with the rest of the login template. Username and URL clipboard copies also send the text to `wl-copy` over stdin rather than command-line arguments. If `clipboardClearSeconds` is greater than 0, the plugin later runs `wl-copy --clear` so a copied secret does not stay on the clipboard indefinitely. The plugin never writes passwords, TOTP codes, or `--show-secrets` list output to disk or logs. Title, username, and URL metadata may be cached at `~/.cache/omarchy/proton-pass.json`. Omarchy plugins run unsandboxed in the shell process.

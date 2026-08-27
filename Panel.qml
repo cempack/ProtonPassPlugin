@@ -71,7 +71,7 @@ Panel {
     if (pass.status === "missing") return "Install pass-cli, then sign in with pass-cli login."
     if (pass.status === "unauthenticated") return "Run pass-cli login in a terminal."
     if (pass.status === "locked") return "Unlock the session, then reopen this panel."
-    if (pass.status === "migration-required") return pass.lastError
+    if (pass.status === "migration-required") return "Run pass-cli login in a terminal, then right-click the bar icon to refresh."
     if (pass.status === "error") return pass.lastError || "Could not load Proton Pass."
     if (listReady && pass.items.length === 0 && pass.fetchWarning !== "") return pass.fetchWarning
     if (listReady && pass.items.length === 0 && pass.lastError !== "") return pass.lastError

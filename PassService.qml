@@ -33,6 +33,7 @@ Item {
     if (minutes > 120) minutes = 120
     return minutes * 60 * 1000
   }
+  readonly property int clipboardClearMs: Model.clipboardClearDelayMs(setting("clipboardClearSeconds", 0))
   readonly property bool busy: fetchProcess.running || copyProcess.running || clipboardProcess.running || viewProcess.running || previewProcess.running || createProcess.running || generateProcess.running
   readonly property string passCli: {
     var value = String(setting("passCliPath", "pass-cli") || "pass-cli").trim()
@@ -307,7 +308,7 @@ Item {
     if (kind === "unauthenticated") return "Sign in with pass-cli login"
     if (kind === "locked") return "Session is locked. Run pass-cli session unlock"
     if (kind === "migration-required")
-      return "PROTON_PASS_LINUX_KEYRING=dbus pass-cli logout --force\nPROTON_PASS_LINUX_KEYRING=dbus pass-cli login"
+      return "Run pass-cli login in a terminal, then right-click the bar icon to refresh."
     return elideStatus(stderr) || "Could not load Proton Pass"
   }
 
@@ -486,6 +487,29 @@ Item {
     copiedMessage = "Copied"
     copiedClearTimer.restart()
     copied()
+    scheduleClipboardClear()
+  }
+
+  function scheduleClipboardClear() {
+    clipboardClearTimer.stop()
+    if (clipboardClearMs <= 0) return
+    clipboardClearTimer.restart()
+  }
+
+  function stopClipboardClearProcess() {
+    if (!clipboardClearProcess.running) return
+    clipboardClearProcess.signal(15)
+    clipboardClearProcess.running = false
+  }
+
+  function clearClipboard() {
+    if (copyProcess.running || clipboardProcess.running) {
+      if (clipboardClearMs > 0) clipboardClearTimer.restart()
+      return
+    }
+    if (clipboardClearProcess.running) return
+    clipboardClearProcess.command = ["timeout", "--signal=TERM", "--kill-after=2s", "10s", "wl-copy", "--clear"]
+    clipboardClearProcess.running = true
   }
 
   function copyText(value) {
@@ -494,6 +518,7 @@ Item {
     lastError = ""
     copiedMessage = ""
     copiedClearTimer.stop()
+    stopClipboardClearProcess()
     _clipboardError = ""
     _clipboardPayload = text
     _clipboardActive = true
@@ -511,6 +536,7 @@ Item {
     viewedField = String(field || "password")
     copiedMessage = ""
     copiedClearTimer.stop()
+    stopClipboardClearProcess()
     copying = true
     lastError = ""
     _copyError = ""
@@ -713,6 +739,13 @@ Item {
     interval: 1500
     repeat: false
     onTriggered: root.copiedMessage = ""
+  }
+
+  Timer {
+    id: clipboardClearTimer
+    interval: root.clipboardClearMs
+    repeat: false
+    onTriggered: root.clearClipboard()
   }
 
   Timer {
@@ -1182,5 +1215,11 @@ Item {
       }
       root._clipboardError = ""
     }
+  }
+
+  Process {
+    id: clipboardClearProcess
+    running: false
+    command: []
   }
 }

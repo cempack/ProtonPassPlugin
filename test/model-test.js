@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, mergePartialItemLists: typeof mergePartialItemLists === 'function' ? mergePartialItemLists : null, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, buildCreateLoginRequest: typeof buildCreateLoginRequest === 'function' ? buildCreateLoginRequest : null, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
+    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, mergePartialItemLists: typeof mergePartialItemLists === 'function' ? mergePartialItemLists : null, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, buildCreateLoginRequest: typeof buildCreateLoginRequest === 'function' ? buildCreateLoginRequest : null, clipboardClearDelayMs: typeof clipboardClearDelayMs === 'function' ? clipboardClearDelayMs : null, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
 )()
 
 function summaryList() {
@@ -181,6 +181,10 @@ assert.strictEqual(info.email, "me@example.com")
 assert.strictEqual(info.sessionHasLock, true)
 
 assert.strictEqual(Model.classifyError("please login first", 1), "unauthenticated")
+assert.strictEqual(
+  Model.classifyError("Error: Local encryption key not found but local data exists. Forcing logout for security.\nRun 'pass-cli login' to authenticate again.", 1),
+  "unauthenticated"
+)
 assert.strictEqual(Model.classifyError("Session is locked", 1), "locked")
 assert.strictEqual(Model.classifyError("pass-cli: command not found", 127), "missing")
 assert.strictEqual(Model.classifyError("boom", 1), "error")
@@ -373,7 +377,7 @@ const createArgs = Model.buildCreateLoginCommand({
 })
 assert.deepStrictEqual(createArgs, [
   "item", "create", "login",
-  "--share-id", "share-1",
+  "--share-id=share-1",
   "--from-template", "-"
 ])
 assert.ok(!createArgs.includes("--password"))
@@ -391,7 +395,7 @@ const customRequest = Model.buildCreateLoginRequest({
 })
 assert.deepStrictEqual(customRequest.args, [
   "item", "create", "login",
-  "--share-id", "share-1",
+  "--share-id=share-1",
   "--from-template", "-"
 ])
 assert.ok(!customRequest.args.includes("--password"))
@@ -430,6 +434,24 @@ assert.strictEqual(generatedRequest.stdin, "")
 assert.strictEqual(generatedRequest.needsPasswordGeneration, true)
 assert.ok(!generatedRequest.args.includes("alice"))
 assert.ok(!generatedRequest.args.includes("--username"))
+
+const dashedShareId = "-XMlw7-WpkQ"
+const dashedCreate = Model.buildCreateLoginCommand({
+  shareId: dashedShareId,
+  title: "GitHub",
+  password: "secret"
+})
+assert.ok(dashedCreate.includes("--share-id=" + dashedShareId), "dash-prefixed share ids must join the flag with =")
+assert.ok(!dashedCreate.includes("--share-id"), "create argv must not pass --share-id as its own token")
+assert.ok(!dashedCreate.includes(dashedShareId), "dash-prefixed share ids must not be a separate argv token")
+
+assert.strictEqual(typeof Model.clipboardClearDelayMs, "function")
+assert.strictEqual(Model.clipboardClearDelayMs(0), 0)
+assert.strictEqual(Model.clipboardClearDelayMs("45"), 45000)
+assert.strictEqual(Model.clipboardClearDelayMs(-3), 0)
+assert.strictEqual(Model.clipboardClearDelayMs("nope"), 0)
+assert.strictEqual(Model.clipboardClearDelayMs(9999), 300000)
+assert.strictEqual(Model.clipboardClearDelayMs(undefined), 0)
 
 assert.strictEqual(typeof Model.mergePartialItemLists, "function")
 const partialMerged = Model.mergePartialItemLists(

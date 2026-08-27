@@ -29,7 +29,7 @@ const viewProcessSource = processSection("viewProcess", "previewProcess")
 const previewProcessSource = processSection("previewProcess", "createProcess")
 const createProcessSource = processSection("createProcess", "generateProcess")
 const generateProcessSource = processSection("generateProcess", "clipboardProcess")
-const clipboardProcessSource = processSection("clipboardProcess", null)
+const clipboardProcessSource = processSection("clipboardProcess", "clipboardClearProcess")
 
 assert.doesNotMatch(
   serviceSource,
@@ -156,9 +156,20 @@ assert.match(
 )
 
 for (const command of recoveryCommands) {
-  assert.ok(serviceSource.includes(command), "service must expose exact migration recovery command: " + command)
   assert.ok(readmeSource.includes(command), "README must document exact migration recovery command: " + command)
+  assert.ok(!panelSource.includes(command), "panel must not dump recovery commands as UI text: " + command)
+  assert.ok(!serviceSource.includes(command), "service must not dump recovery commands as UI text: " + command)
 }
+assert.match(
+  panelSource,
+  /if \(pass\.status === "migration-required"\) return "[^"]*pass-cli login[^"]*"/,
+  "migration status uses a human-readable hint"
+)
+assert.match(
+  serviceSource,
+  /if \(kind === "migration-required"\)\s*\n?\s*return "[^"]*pass-cli login[^"]*"/,
+  "migration lastError is a human-readable hint"
+)
 assert.match(serviceSource, /migration-required/, "migration status is handled by the service")
 assert.match(panelSource, /migration-required/, "migration status blocks the normal panel flow")
 assert.match(
@@ -256,6 +267,49 @@ assert.match(
   panelSource,
   /function onPasswordGenerated[\s\S]*if\s*\(!root\.opened\s*\|\|\s*!root\.showCreate(?:\s*\|\|\s*pass\.creating)?\)\s*return[\s\S]*draftPassword\s*=/,
   "a generated password cannot repopulate draft state after cancel or panel close"
+)
+
+assert.match(
+  serviceSource,
+  /function showCopied[\s\S]*scheduleClipboardClear\(/,
+  "successful copies schedule the optional clipboard clear"
+)
+assert.match(
+  serviceSource,
+  /function scheduleClipboardClear[\s\S]*clipboardClearMs\s*<=\s*0[\s\S]*return/,
+  "clipboard clear stays off when the delay is 0"
+)
+assert.match(
+  serviceSource,
+  /id:\s*clipboardClearTimer/,
+  "clipboard clear uses a one-shot timer"
+)
+assert.match(
+  serviceSource,
+  /id:\s*clipboardClearProcess/,
+  "clipboard clear uses a dedicated process"
+)
+assert.match(
+  serviceSource,
+  /clipboardClearProcess\.command\s*=\s*\[[^\]]*"wl-copy"[^\]]*"--clear"/,
+  "clipboard clear invokes wl-copy --clear as argv"
+)
+assert.doesNotMatch(
+  serviceSource,
+  /clipboardClearProcess\.command\s*=\s*\[[^\]]*bash/,
+  "clipboard clear must not use bash -c"
+)
+const clearClipboardFn = serviceSource.match(/function clearClipboard\(\) \{[\s\S]*?\n  function /)
+assert.ok(clearClipboardFn, "clearClipboard is defined before the next function")
+assert.doesNotMatch(
+  clearClipboardFn[0],
+  /lastError/,
+  "clipboard auto-clear must not surface secrets or errors as lastError"
+)
+assert.match(
+  readmeSource,
+  /clipboardClearSeconds/,
+  "README documents the optional clipboard clear setting"
 )
 
 console.log("ok")
