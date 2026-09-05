@@ -7,10 +7,12 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow, cursorItemCount, cursorItemAt, resolveCursorRow, clearFailedPreviewKeys, applyPreviewBatch }\n"
+    "\nreturn { recentlyUsed, withoutItems, listRowCursorIndex, listScrollTargetIndex, visiblePreviewWindow, cursorItemCount, cursorItemAt, resolveCursorRow, clearFailedPreviewKeys, applyPreviewBatch, clampListScrollY: typeof clampListScrollY === 'function' ? clampListScrollY : null }\n"
 )()
 
 const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const itemRowSource = fs.readFileSync(path.join(__dirname, "..", "ItemRow.qml"), "utf8")
+const modelSource = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const passServiceSource = fs.readFileSync(path.join(__dirname, "..", "PassService.qml"), "utf8")
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
 const readmeSource = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
@@ -268,5 +270,32 @@ assert.strictEqual(
 )
 assert.deepStrictEqual(Model.clearFailedPreviewKeys(), { map: {}, order: [] })
 assert.strictEqual(Model.applyPreviewBatch([{ id: "x", shareId: "v", title: "X", username: "" }], { "v/x": { username: "u" } }).updated[0].username, "u")
+
+assert.match(itemRowSource, /faviconUrls/, "login rows try every website hostname")
+assert.match(itemRowSource, /Image\.Error/, "a failed favicon advances to the next domain")
+assert.match(itemRowSource, /nextFaviconIndex/, "favicon fallback uses the shared index helper")
+assert.strictEqual(typeof Model.clampListScrollY, "function")
+assert.strictEqual(Model.clampListScrollY(440, 2000, 220), 440)
+assert.strictEqual(Model.clampListScrollY(-10, 2000, 220), 0)
+assert.strictEqual(Model.clampListScrollY(9999, 500, 220), 280)
+assert.match(panelSource, /function restoreListScroll/, "preview and fetch rebuilds must restore the list scroll position")
+assert.match(panelSource, /onRecentChanged:[\s\S]*restoreListScroll/, "recent-list rebuilds restore scroll")
+assert.match(panelSource, /onFilteredChanged:[\s\S]*restoreListScroll/, "search-list rebuilds restore scroll")
+assert.match(
+  panelSource,
+  /id:\s*listView[\s\S]*opacity:\s*root\.showList/,
+  "hiding the inspector must not unload the list or it snaps back to the top"
+)
+assert.doesNotMatch(
+  panelSource,
+  /id:\s*listView[\s\S]*visible:\s*root\.showList && root\.statusHint/,
+  "ListView visible:false unloads scroll state"
+)
+assert.match(itemRowSource, /asynchronous:\s*true/, "favicons load off the UI thread")
+assert.match(itemRowSource, /status === Image\.Ready/, "type glyph stays until the favicon is actually loaded")
+assert.match(itemRowSource, /sourceSize\.width:\s*64/, "favicon decode size must not depend on a zero layout width")
+assert.match(modelSource, /google\.com\/s2\/favicons/, "PNG favicons come from a service Qt can decode")
+assert.doesNotMatch(modelSource, /icons\.duckduckgo\.com/, "ICO duckduckgo icons fail to decode for most sites")
+assert.match(readmeSource, /google\.com\/s2\/favicons/, "README documents the favicon network call")
 
 console.log("ok")

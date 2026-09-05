@@ -7,7 +7,7 @@ const path = require("path")
 
 const Model = new Function(
   fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, mergeItemPreview, mergeItemLists, mergePartialItemLists: typeof mergePartialItemLists === 'function' ? mergePartialItemLists : null, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, buildCreateLoginRequest: typeof buildCreateLoginRequest === 'function' ? buildCreateLoginRequest : null, clipboardClearDelayMs: typeof clipboardClearDelayMs === 'function' ? clipboardClearDelayMs : null, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
+    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, parseItemInspector: typeof parseItemInspector === 'function' ? parseItemInspector : null, parseTotpCodes: typeof parseTotpCodes === 'function' ? parseTotpCodes : null, totpSecondsRemaining: typeof totpSecondsRemaining === 'function' ? totpSecondsRemaining : null, itemTypeLabel: typeof itemTypeLabel === 'function' ? itemTypeLabel : null, itemTypeGlyph: typeof itemTypeGlyph === 'function' ? itemTypeGlyph : null, faviconUrl: typeof faviconUrl === 'function' ? faviconUrl : null, faviconUrls: typeof faviconUrls === 'function' ? faviconUrls : null, nextFaviconIndex: typeof nextFaviconIndex === 'function' ? nextFaviconIndex : null, needsPreview: typeof needsPreview === 'function' ? needsPreview : null, primaryCopyField: typeof primaryCopyField === 'function' ? primaryCopyField : null, mergeItemPreview, mergeItemLists, mergePartialItemLists: typeof mergePartialItemLists === 'function' ? mergePartialItemLists : null, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, buildCreateLoginRequest: typeof buildCreateLoginRequest === 'function' ? buildCreateLoginRequest : null, clipboardClearDelayMs: typeof clipboardClearDelayMs === 'function' ? clipboardClearDelayMs : null, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
 )()
 
 function summaryList() {
@@ -66,14 +66,20 @@ function secretList() {
 }
 
 const summaryItems = Model.parseItemList(summaryList(), "Personal")
-assert.strictEqual(summaryItems.length, 1, "non-login items are dropped")
-assert.strictEqual(summaryItems[0].title, "GitHub")
-assert.strictEqual(summaryItems[0].id, "item-gh")
-assert.strictEqual(summaryItems[0].shareId, "share-1")
-assert.strictEqual(summaryItems[0].vaultName, "Personal")
-assert.strictEqual(summaryItems[0].username, "")
-assert.ok(!("password" in summaryItems[0]))
-assert.ok(!JSON.stringify(summaryItems[0]).includes("password"))
+assert.strictEqual(summaryItems.length, 2, "notes and other types stay in the list")
+const summaryLogin = summaryItems.find(function (item) { return item.itemType === "login" })
+const summaryNote = summaryItems.find(function (item) { return item.itemType === "note" })
+assert.ok(summaryLogin)
+assert.strictEqual(summaryLogin.title, "GitHub")
+assert.strictEqual(summaryLogin.id, "item-gh")
+assert.strictEqual(summaryLogin.shareId, "share-1")
+assert.strictEqual(summaryLogin.vaultName, "Personal")
+assert.strictEqual(summaryLogin.username, "")
+assert.ok(!("password" in summaryLogin))
+assert.ok(summaryNote)
+assert.strictEqual(summaryNote.title, "Secret note")
+assert.ok(!("note" in summaryNote), "list metadata must not keep note bodies")
+assert.ok(!JSON.stringify(summaryItems).includes("password"))
 
 const secretItems = Model.parseItemList(secretList(), "Work")
 assert.strictEqual(secretItems.length, 1)
@@ -94,7 +100,8 @@ assert.ok(!secretJson.includes("do not keep"))
 
 assert.strictEqual(Model.accountLabel(secretItems[0]), "elli")
 assert.strictEqual(Model.accountLabel(summaryItems[0]), "")
-assert.strictEqual(Model.itemSubtitle(summaryItems[0]), "Personal")
+assert.strictEqual(Model.itemSubtitle(summaryLogin), "Personal")
+assert.strictEqual(Model.itemSubtitle(summaryNote), "Note · Personal")
 assert.strictEqual(Model.itemSubtitle(secretItems[0]), "elli · me@example.com · discord.com · Work")
 assert.strictEqual(Model.itemSubtitle({
   title: "Proton",
@@ -130,7 +137,7 @@ assert.deepStrictEqual(
   Model.searchItems(mixed, "elli").map(function (item) { return item.title }),
   ["Discord"]
 )
-assert.strictEqual(Model.searchItems(mixed, "").length, 2)
+assert.strictEqual(Model.searchItems(mixed, "").length, 3)
 
 const suggested = Model.suggestedItems(mixed, "discord", "Discord — #general")
 assert.deepStrictEqual(suggested.map(function (item) { return item.title }), ["Discord"])
@@ -159,7 +166,7 @@ assert.deepStrictEqual(
 )
 
 const skipped = Model.withoutItems(mixed, [summaryItems[0]])
-assert.deepStrictEqual(skipped.map(function (item) { return item.title }), ["Discord"])
+assert.deepStrictEqual(skipped.map(function (item) { return item.title }), ["Secret note", "Discord"])
 assert.strictEqual(Model.itemKey(summaryItems[0]), "share-1/item-gh")
 
 const vaults = Model.parseVaultList(JSON.stringify([
@@ -569,5 +576,299 @@ assert.strictEqual(batchResult.updated[1].username, "bob")
 assert.ok(!JSON.stringify(batchResult).includes("secret-batch"))
 assert.ok(!JSON.stringify(batchResult).includes("otpauth"))
 assert.deepStrictEqual(Model.applyPreviewBatch(baseItems, {}).updated, [])
+
+assert.strictEqual(typeof Model.parseItemInspector, "function")
+assert.strictEqual(typeof Model.parseTotpCodes, "function")
+assert.strictEqual(typeof Model.totpSecondsRemaining, "function")
+assert.strictEqual(typeof Model.itemTypeLabel, "function")
+assert.strictEqual(typeof Model.primaryCopyField, "function")
+
+function inspectorField(inspector, id) {
+  const sections = inspector && inspector.sections ? inspector.sections : []
+  for (let i = 0; i < sections.length; i++) {
+    const fields = sections[i].fields || []
+    for (let j = 0; j < fields.length; j++) {
+      if (fields[j].id === id || fields[j].field === id) return fields[j]
+    }
+  }
+  return null
+}
+
+assert.strictEqual(Model.itemTypeLabel("credit-card"), "Card")
+assert.strictEqual(Model.itemTypeLabel("ssh-key"), "SSH key")
+assert.strictEqual(Model.itemTypeLabel("wifi"), "Wi-Fi")
+assert.strictEqual(Model.primaryCopyField({ itemType: "login" }), "password")
+assert.strictEqual(Model.primaryCopyField({ itemType: "note" }), "")
+assert.strictEqual(Model.primaryCopyField({ itemType: "credit-card" }), "")
+assert.ok(Model.itemTypeGlyph({ itemType: "note" }))
+assert.notStrictEqual(Model.itemTypeGlyph({ itemType: "note" }), Model.itemTypeGlyph({ itemType: "login" }))
+assert.strictEqual(typeof Model.faviconUrl, "function")
+function gicon(host) {
+  return "https://www.google.com/s2/favicons?domain=" + host + "&sz=64"
+}
+function originIcon(host) {
+  return "https://" + host + "/favicon.ico"
+}
+assert.strictEqual(Model.faviconUrl({ urls: ["https://github.com/login"] }), originIcon("github.com"))
+assert.deepStrictEqual(Model.faviconUrls({ urls: ["https://github.com/login"] }), [
+  originIcon("github.com"),
+  gicon("github.com")
+])
+assert.deepStrictEqual(Model.faviconUrls({ urls: ["https://www.discord.com/channels/1"] }), [
+  originIcon("discord.com"),
+  gicon("discord.com")
+])
+assert.deepStrictEqual(Model.faviconUrls({ urls: ["", "https://account.proton.me/"] }), [
+  originIcon("account.proton.me"),
+  gicon("account.proton.me"),
+  gicon("proton.me")
+])
+assert.deepStrictEqual(Model.faviconUrls({ title: "id.sinch.com", urls: [] }), [
+  originIcon("id.sinch.com"),
+  gicon("id.sinch.com"),
+  gicon("sinch.com")
+])
+assert.strictEqual(Model.faviconUrl({ title: "git.elliotmoreau.fr", username: "git" }), originIcon("git.elliotmoreau.fr"))
+assert.strictEqual(Model.faviconUrl({ title: "Stripe", urls: [] }), originIcon("stripe.com"))
+assert.strictEqual(Model.faviconUrl({ title: "nvidia" }), originIcon("nvidia.com"))
+assert.strictEqual(Model.faviconUrl({ title: "RandomApp", email: "me@gmail.com" }), originIcon("randomapp.com"))
+assert.ok(!String(Model.faviconUrl({ title: "RandomApp", email: "me@gmail.com" })).includes("gmail.com"), "consumer mail hosts are not icons")
+assert.strictEqual(Model.faviconUrl({ urls: [] }), "")
+assert.strictEqual(Model.faviconUrl(null), "")
+assert.strictEqual(Model.faviconUrl({ urls: ["javascript:alert(1)"] }), "")
+assert.strictEqual(Model.faviconUrl({ urls: ["https://127.0.0.1/login"] }), "")
+assert.strictEqual(Model.faviconUrl({ urls: ["https://192.168.0.10/"] }), "")
+assert.strictEqual(Model.faviconUrl({ urls: ["https://localhost/"] }), "")
+assert.ok(!String(Model.faviconUrls({ urls: ["https://evil.com/x"] }).join(" ")).includes("evil.com/x"))
+assert.ok(Model.faviconUrls({ urls: ["https://stripe.com"] }).some(function (url) {
+  return url.indexOf("google.com/s2/favicons") >= 0 && url.indexOf(".ico") < 0
+}), "each host still has a PNG fallback Qt can decode")
+assert.deepStrictEqual(
+  Model.faviconUrls({
+    urls: ["https://konsoleh.hetzner.com/", "https://cloud.elliotmoreau.fr/"]
+  }),
+  [
+    originIcon("konsoleh.hetzner.com"),
+    gicon("konsoleh.hetzner.com"),
+    gicon("hetzner.com"),
+    originIcon("cloud.elliotmoreau.fr"),
+    gicon("cloud.elliotmoreau.fr"),
+    gicon("elliotmoreau.fr")
+  ]
+)
+assert.deepStrictEqual(
+  Model.faviconUrls({ urls: ["https://www.github.com/", "https://github.com/login"] }),
+  [originIcon("github.com"), gicon("github.com")]
+)
+assert.deepStrictEqual(
+  Model.faviconUrls({ urls: ["https://127.0.0.1/", "https://stripe.com"] }),
+  [originIcon("stripe.com"), gicon("stripe.com")]
+)
+assert.deepStrictEqual(
+  Model.faviconUrls({ title: "Stripe", urls: ["https://konsoleh.hetzner.com/"] }),
+  [
+    originIcon("konsoleh.hetzner.com"),
+    gicon("konsoleh.hetzner.com"),
+    gicon("hetzner.com"),
+    originIcon("stripe.com"),
+    gicon("stripe.com")
+  ]
+)
+assert.strictEqual(Model.nextFaviconIndex(2, 0, true), 1)
+assert.strictEqual(Model.nextFaviconIndex(2, 1, true), 1)
+assert.strictEqual(Model.nextFaviconIndex(2, 0, false), 0)
+assert.strictEqual(Model.nextFaviconIndex(0, 0, true), 0)
+
+assert.strictEqual(typeof Model.needsPreview, "function")
+assert.strictEqual(Model.needsPreview({
+  id: "a", shareId: "s", itemType: "login", username: "ada", urls: []
+}), true, "cached usernames must not skip website preview")
+assert.strictEqual(Model.needsPreview({
+  id: "a", shareId: "s", itemType: "login", username: "ada", urls: ["https://stripe.com"]
+}), false)
+assert.strictEqual(Model.needsPreview({
+  id: "a", shareId: "s", itemType: "login", username: "ada", urls: [], previewed: true
+}), false)
+assert.strictEqual(Model.needsPreview({
+  id: "a", shareId: "s", itemType: "note", urls: []
+}), false)
+
+assert.strictEqual(
+  Model.searchItems([{ title: "Home", itemType: "wifi", vaultName: "Personal" }], "wifi").length,
+  1,
+  "type labels are searchable"
+)
+
+const notePreview = Model.parseItemPreview(JSON.stringify({
+  id: "item-note",
+  share_id: "share-1",
+  item_type: "note",
+  content: { title: "Secret note", note: "body stays in inspector", content: { Note: {} } }
+}))
+assert.strictEqual(notePreview, null, "item view previews stay login-only")
+
+const cachedNote = Model.serializeCache("me@example.com", 1, [summaryNote], 0)
+assert.strictEqual(cachedNote.items[0].itemType, "note")
+assert.ok(!("note" in cachedNote.items[0]))
+assert.ok(!JSON.stringify(cachedNote).includes("body stays"))
+
+const loginInspector = Model.parseItemInspector(JSON.stringify({
+  id: "item-dc",
+  share_id: "share-2",
+  content: {
+    title: "Discord",
+    note: "recovery codes live here",
+    content: {
+      Login: {
+        email: "me@example.com",
+        username: "elli",
+        password: "super-secret",
+        urls: ["https://discord.com"],
+        totp_uri: "otpauth://totp/Discord?secret=ABC"
+      }
+    },
+    extra_fields: [
+      { name: "pin", content: { Hidden: "1234" } },
+      { name: "Backup", content: { Totp: "otpauth://totp/Backup?secret=DEF" } }
+    ]
+  }
+}))
+assert.ok(loginInspector)
+assert.strictEqual(loginInspector.itemType, "login")
+assert.strictEqual(loginInspector.title, "Discord")
+assert.strictEqual(loginInspector.hasTotp, true)
+assert.strictEqual(inspectorField(loginInspector, "username").value, "elli")
+assert.strictEqual(inspectorField(loginInspector, "password").kind, "secret")
+assert.strictEqual(inspectorField(loginInspector, "password").value, "super-secret")
+assert.strictEqual(inspectorField(loginInspector, "totp").kind, "totp")
+assert.ok(!String(inspectorField(loginInspector, "totp").value).includes("otpauth"))
+assert.strictEqual(inspectorField(loginInspector, "pin").kind, "secret")
+assert.strictEqual(inspectorField(loginInspector, "pin").value, "1234")
+assert.strictEqual(inspectorField(loginInspector, "Backup").kind, "totp")
+assert.strictEqual(inspectorField(loginInspector, "note").kind, "note")
+assert.strictEqual(inspectorField(loginInspector, "note").value, "recovery codes live here")
+assert.ok(!JSON.stringify(loginInspector).includes("otpauth"))
+
+const noteInspector = Model.parseItemInspector(JSON.stringify({
+  item: {
+    id: "item-note",
+    share_id: "share-1",
+    content: { title: "Secret note", note: "hello from the vault", content: { Note: {} } }
+  }
+}))
+assert.strictEqual(noteInspector.itemType, "note")
+assert.strictEqual(inspectorField(noteInspector, "note").value, "hello from the vault")
+assert.strictEqual(inspectorField(noteInspector, "note").kind, "note")
+
+const cardInspector = Model.parseItemInspector(JSON.stringify({
+  content: {
+    title: "Visa",
+    content: {
+      CreditCard: {
+        cardholder_name: "Ada Lovelace",
+        number: "4111111111111111",
+        verification_number: "123",
+        expiration_date: "2030-12",
+        pin: "9999"
+      }
+    }
+  }
+}))
+assert.strictEqual(cardInspector.itemType, "credit-card")
+assert.strictEqual(inspectorField(cardInspector, "number").kind, "secret")
+assert.strictEqual(inspectorField(cardInspector, "pin").kind, "secret")
+assert.strictEqual(inspectorField(cardInspector, "cardholder_name").value, "Ada Lovelace")
+
+const wifiInspector = Model.parseItemInspector(JSON.stringify({
+  content: {
+    title: "Office",
+    content: { Wifi: { ssid: "Office-5G", password: "airgap", security: "WPA2", sections: [] } }
+  }
+}))
+assert.strictEqual(wifiInspector.itemType, "wifi")
+assert.strictEqual(inspectorField(wifiInspector, "ssid").value, "Office-5G")
+assert.strictEqual(inspectorField(wifiInspector, "password").kind, "secret")
+
+const sshInspector = Model.parseItemInspector(JSON.stringify({
+  content: {
+    title: "Deploy",
+    extra_fields: [{ name: "Passphrase", content: { Hidden: "phrase" } }],
+    content: { SshKey: { private_key: "-----BEGIN OPENSSH PRIVATE KEY-----", public_key: "ssh-ed25519 AAAA", sections: [] } }
+  }
+}))
+assert.strictEqual(sshInspector.itemType, "ssh-key")
+assert.strictEqual(inspectorField(sshInspector, "private_key").kind, "secret")
+assert.strictEqual(inspectorField(sshInspector, "Passphrase").kind, "secret")
+
+const identityInspector = Model.parseItemInspector(JSON.stringify({
+  content: {
+    title: "Ada",
+    content: {
+      Identity: {
+        full_name: "Ada Lovelace",
+        email: "ada@example.com",
+        phone_number: "+1",
+        social_security_number: "000-00-0000",
+        street_address: "1 Park",
+        city: "London",
+        company: "Analytical",
+        extra_personal_details: [],
+        extra_address_details: [],
+        extra_contact_details: [],
+        extra_work_details: [],
+        extra_sections: []
+      }
+    }
+  }
+}))
+assert.strictEqual(identityInspector.itemType, "identity")
+assert.strictEqual(inspectorField(identityInspector, "full_name").value, "Ada Lovelace")
+assert.strictEqual(inspectorField(identityInspector, "social_security_number").kind, "secret")
+assert.ok(identityInspector.sections.some(function (section) { return section.title === "Address" }))
+assert.ok(identityInspector.sections.some(function (section) { return section.title === "Work" }))
+
+const aliasInspector = Model.parseItemInspector(JSON.stringify({
+  alias_email: "hide@proton.me",
+  content: { title: "Hide my email", content: { Alias: {} } }
+}))
+assert.strictEqual(aliasInspector.itemType, "alias")
+assert.strictEqual(inspectorField(aliasInspector, "email").value, "hide@proton.me")
+
+const customInspector = Model.parseItemInspector(JSON.stringify({
+  content: {
+    title: "API",
+    content: {
+      Custom: {
+        sections: [{
+          section_name: "Production",
+          section_fields: [
+            { field_name: "token", content: { Hidden: "tok_live" } },
+            { field_name: "endpoint", content: { Text: "https://api.example" } }
+          ]
+        }]
+      }
+    }
+  }
+}))
+assert.strictEqual(customInspector.itemType, "custom")
+assert.strictEqual(inspectorField(customInspector, "Production.token").kind, "secret")
+assert.strictEqual(inspectorField(customInspector, "Production.token").field, "Production.token")
+assert.strictEqual(inspectorField(customInspector, "Production.endpoint").value, "https://api.example")
+
+const attachmentInspector = Model.parseItemInspector(JSON.stringify({
+  attachments: [{ name: "passport.pdf", size: 12 }],
+  content: { title: "Files", note: "", content: { Note: {} } }
+}))
+assert.strictEqual(inspectorField(attachmentInspector, "attachment-0").value, "passport.pdf")
+assert.notStrictEqual(inspectorField(attachmentInspector, "attachment-0").kind, "secret")
+
+assert.deepStrictEqual(Model.parseTotpCodes(JSON.stringify({ totp: "123456", Backup: "654321" })), {
+  totp: "123456",
+  Backup: "654321"
+})
+assert.deepStrictEqual(Model.parseTotpCodes("not-json"), {})
+assert.strictEqual(Model.totpSecondsRemaining(Date.UTC(2026, 0, 1, 0, 0, 0), 30), 30)
+assert.strictEqual(Model.totpSecondsRemaining(Date.UTC(2026, 0, 1, 0, 0, 1), 30), 29)
+assert.strictEqual(Model.totpSecondsRemaining(Date.UTC(2026, 0, 1, 0, 0, 29), 30), 1)
 
 console.log("ok")

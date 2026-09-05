@@ -10,6 +10,7 @@ const modelSource = fs.readFileSync(path.join(ROOT, "Model.js"), "utf8")
 const serviceSource = fs.readFileSync(path.join(ROOT, "PassService.qml"), "utf8")
 const panelSource = fs.readFileSync(path.join(ROOT, "Panel.qml"), "utf8")
 const readmeSource = fs.readFileSync(path.join(ROOT, "README.md"), "utf8")
+const fetchSource = fs.readFileSync(path.join(ROOT, "fetch.py"), "utf8")
 const allRuntimeSource = [modelSource, serviceSource, panelSource].join("\n")
 
 const recoveryCommands = [
@@ -29,7 +30,9 @@ const viewProcessSource = processSection("viewProcess", "previewProcess")
 const previewProcessSource = processSection("previewProcess", "createProcess")
 const createProcessSource = processSection("createProcess", "generateProcess")
 const generateProcessSource = processSection("generateProcess", "clipboardProcess")
-const clipboardProcessSource = processSection("clipboardProcess", "clipboardClearProcess")
+const clipboardProcessSource = processSection("clipboardProcess", "inspectProcess")
+const inspectProcessSource = processSection("inspectProcess", "totpProcess")
+const totpProcessSource = processSection("totpProcess", "clipboardClearProcess")
 
 assert.doesNotMatch(
   serviceSource,
@@ -62,7 +65,7 @@ assert.match(
 )
 assert.doesNotMatch(allRuntimeSource, /console\.(?:log|warn|error)[^\n]*(?:password|_createStdinPayload)/i)
 
-for (const name of ["copy", "view", "preview", "create", "generate", "clipboard"]) {
+for (const name of ["copy", "view", "preview", "create", "generate", "clipboard", "inspect", "totp"]) {
   assert.match(serviceSource, new RegExp("id:\\s*" + name + "Watchdog\\b"), name + " process has a finite watchdog")
   assert.match(
     serviceSource,
@@ -111,7 +114,9 @@ for (const [name, section, busyFlag] of [
   ["preview", previewProcessSource, "previewing"],
   ["create", createProcessSource, "creating"],
   ["generate", generateProcessSource, "generatingPassword"],
-  ["clipboard", clipboardProcessSource, "_clipboardActive"]
+  ["clipboard", clipboardProcessSource, "_clipboardActive"],
+  ["inspect", inspectProcessSource, "inspecting"],
+  ["totp", totpProcessSource, "totpLoading"]
 ]) {
   assert.match(section, /onRunningChanged:[\s\S]*Qt\.callLater/, name + " handles failed launch without exited")
   assert.match(section, new RegExp(busyFlag + "\\s*=\\s*false"), name + " failed launch clears its busy flag")
@@ -310,6 +315,77 @@ assert.match(
   readmeSource,
   /clipboardClearSeconds/,
   "README documents the optional clipboard clear setting"
+)
+
+assert.doesNotMatch(
+  fetchSource,
+  /--filter-type/,
+  "vault item lists include every active type, not just logins"
+)
+assert.match(
+  serviceSource,
+  /Model\.needsPreview\(item\)/,
+  "username previews stay login-only so notes never trigger item view"
+)
+assert.match(
+  serviceSource,
+  /function inspectItem[\s\S]*--share-id="[\s\S]*--item-id=/,
+  "inspector loads one item by joined share and item ids"
+)
+assert.match(
+  serviceSource,
+  /inspectProcess\.command\s*=[\s\S]*item",\s*"view"[\s\S]*--output",\s*"json"/,
+  "inspector requests JSON item view"
+)
+assert.doesNotMatch(
+  serviceSource,
+  /inspectProcess\.command[\s\S]*--show-secrets/,
+  "inspector must not pass --show-secrets"
+)
+assert.match(
+  serviceSource,
+  /totpProcess\.command\s*=[\s\S]*item",\s*"totp"[\s\S]*--output",\s*"json"/,
+  "live codes come from pass-cli item totp"
+)
+assert.match(
+  serviceSource,
+  /function resetInspector[\s\S]*inspector\s*=\s*null[\s\S]*totpCodes/,
+  "closing the inspector drops in-memory secrets and TOTP codes"
+)
+assert.match(
+  panelSource,
+  /function closeDetail[\s\S]*resetInspector/,
+  "back from inspector clears in-memory secrets"
+)
+assert.match(
+  panelSource,
+  /function close\(\)[\s\S]*resetInspector/,
+  "panel close clears in-memory inspector secrets"
+)
+assert.match(
+  panelSource,
+  /No items in your vaults/,
+  "empty vault copy covers every item type"
+)
+assert.match(
+  panelSource,
+  /function activateCursor[\s\S]*primaryCopyField[\s\S]*copyPasswordAndClose[\s\S]*openDetail/,
+  "Enter copies login passwords and opens the inspector for other types"
+)
+assert.match(
+  panelSource,
+  /pass\.inspector/,
+  "detail view is driven by the inspector field model"
+)
+assert.match(
+  inspectProcessSource,
+  /stdout:\s*SplitParser/,
+  "inspector JSON uses a non-retaining parser"
+)
+assert.match(
+  totpProcessSource,
+  /stdout:\s*SplitParser/,
+  "TOTP JSON uses a non-retaining parser"
 )
 
 console.log("ok")

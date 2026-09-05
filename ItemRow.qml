@@ -15,7 +15,21 @@ CursorSurface {
 
   readonly property string titleText: item ? String(item.title || "Untitled") : "Untitled"
   readonly property string subtitleText: item ? Model.itemSubtitle(item) : ""
-  readonly property string glyph: Model.letterGlyph(titleText)
+  readonly property string glyph: item ? Model.itemTypeGlyph(item) : "?"
+  property var faviconSources: []
+  property int faviconIndex: 0
+  readonly property string faviconSource: {
+    if (!faviconSources || faviconIndex < 0 || faviconIndex >= faviconSources.length) return ""
+    return String(faviconSources[faviconIndex] || "")
+  }
+
+  function reloadFaviconSources() {
+    faviconIndex = 0
+    faviconSources = item ? Model.faviconUrls(item) : []
+  }
+
+  onItemChanged: reloadFaviconSources()
+  Component.onCompleted: reloadFaviconSources()
 
   signal activated()
   signal hovered()
@@ -47,9 +61,30 @@ CursorSurface {
       Layout.alignment: Qt.AlignVCenter
       radius: Style.cornerRadius
       color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+      clip: true
+
+      Image {
+        id: favicon
+        anchors.fill: parent
+        anchors.margins: Style.space(4)
+        source: root.faviconSource
+        sourceSize.width: 64
+        sourceSize.height: 64
+        fillMode: Image.PreserveAspectFit
+        asynchronous: true
+        cache: true
+        smooth: true
+        visible: root.faviconSource !== "" && status === Image.Ready
+        onStatusChanged: {
+          if (status !== Image.Error) return
+          var next = Model.nextFaviconIndex(root.faviconSources.length, root.faviconIndex, true)
+          if (next !== root.faviconIndex) root.faviconIndex = next
+        }
+      }
 
       Text {
         anchors.centerIn: parent
+        visible: !favicon.visible
         text: root.glyph
         color: root.foreground
         font.family: root.fontFamily

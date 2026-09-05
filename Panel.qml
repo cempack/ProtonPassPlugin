@@ -26,6 +26,7 @@ Panel {
   property int selectedIndex: 0
   property bool cursorActive: false
   property bool passwordVisible: false
+  property var revealedFields: ({})
   property bool closeAfterCopy: false
   property string draftTitle: ""
   property string draftUsername: ""
@@ -33,6 +34,8 @@ Panel {
   property string draftUrl: ""
   property string draftShareId: ""
   property bool createSubmitAttempted: false
+  property real listScrollY: 0
+  property bool restoringListScroll: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -62,11 +65,6 @@ Panel {
   readonly property bool showDetail: viewMode === "detail" && selectedItem !== null
   readonly property bool showCreate: viewMode === "create"
   readonly property bool showLoading: pass.refreshing && pass.items.length === 0 && pass.status !== "missing" && pass.status !== "unauthenticated" && pass.status !== "locked" && pass.status !== "migration-required" && pass.status !== "error"
-  readonly property bool detailUsernameLoading: {
-    if (!showDetail || !selectedItem || !pass.previewing || !pass._previewItem) return false
-    if (selectedItem.id !== pass._previewItem.id || selectedItem.shareId !== pass._previewItem.shareId) return false
-    return Model.accountLabel(selectedItem) === ""
-  }
   readonly property string statusHint: {
     if (pass.status === "missing") return "Install pass-cli, then sign in with pass-cli login."
     if (pass.status === "unauthenticated") return "Run pass-cli login in a terminal."
@@ -75,7 +73,7 @@ Panel {
     if (pass.status === "error") return pass.lastError || "Could not load Proton Pass."
     if (listReady && pass.items.length === 0 && pass.fetchWarning !== "") return pass.fetchWarning
     if (listReady && pass.items.length === 0 && pass.lastError !== "") return pass.lastError
-    if (listReady && pass.items.length === 0 && !pass.refreshing) return "No login items in your vaults."
+    if (listReady && pass.items.length === 0 && !pass.refreshing) return "No items in your vaults."
     return ""
   }
 
@@ -104,7 +102,9 @@ Panel {
     setCenterHoverRevealSuppressed(false)
     closeAfterCopy = false
     passwordVisible = false
+    revealedFields = ({})
     pass.resetViewed()
+    pass.resetInspector()
   }
 
   function toggle() {
@@ -138,6 +138,7 @@ Panel {
     cursorActive = true
     if (String(filterText).trim() === "") {
       searchDebounceTimer.stop()
+      listScrollY = 0
       debouncedFilter = ""
       return
     }
@@ -146,8 +147,10 @@ Panel {
 
   function commitPendingFilter() {
     searchDebounceTimer.stop()
-    if (debouncedFilter !== filterText)
+    if (debouncedFilter !== filterText) {
+      listScrollY = 0
       debouncedFilter = filterText
+    }
   }
 
   function resetSession(keepFilter) {
@@ -156,12 +159,15 @@ Panel {
     selectedIndex = 0
     cursorActive = false
     passwordVisible = false
+    revealedFields = ({})
     pass.resetViewed()
+    pass.resetInspector()
     resetDraft()
     if (!keepFilter) {
       searchDebounceTimer.stop()
       filterText = ""
       debouncedFilter = ""
+      listScrollY = 0
     }
   }
 
@@ -214,7 +220,42 @@ Panel {
   function activateCursor() {
     var item = currentRow()
     if (!item) return
-    copyPasswordAndClose(item)
+    if (Model.primaryCopyField(item)) copyPasswordAndClose(item)
+    else openDetail(item)
+  }
+
+  function isFieldRevealed(id) {
+    return revealedFields && revealedFields[id] === true
+  }
+
+  function toggleFieldReveal(id) {
+    var next = {}
+    var current = revealedFields || {}
+    var keys = Object.keys(current)
+    for (var i = 0; i < keys.length; i++) next[keys[i]] = current[keys[i]]
+    next[id] = next[id] !== true
+    revealedFields = next
+  }
+
+  function inspectorFieldValue(field) {
+    if (!field) return ""
+    var kind = String(field.kind || "text")
+    if (kind === "totp") {
+      var codes = pass.totpCodes || {}
+      var name = String(field.field || "totp")
+      var code = String(codes[name] || codes.totp || "")
+      if (code === "") return pass.totpLoading ? "Loading…" : "••••••"
+      return code + "  " + String(pass.totpRemaining) + "s"
+    }
+    if (kind === "secret" && !isFieldRevealed(field.id)) return root.maskedSecret
+    return String(field.value || "")
+  }
+
+  function copyInspectorField(field) {
+    if (!field || !root.selectedItem) return
+    var name = String(field.field || "")
+    if (name !== "") pass.copyField(root.selectedItem, name)
+    else if (String(field.value || "") !== "") pass.copyText(field.value)
   }
 
   function openDetail(item) {
@@ -222,9 +263,10 @@ Panel {
     selectedItem = item
     viewMode = "detail"
     passwordVisible = false
+    revealedFields = ({})
     pass.lastError = ""
     pass.resetViewed()
-    pass.previewItem(item)
+    pass.inspectItem(item)
     pass.touchItem(item)
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
@@ -232,8 +274,10 @@ Panel {
   function closeDetail() {
     viewMode = "list"
     passwordVisible = false
+    revealedFields = ({})
     pass.clearUrgentPreview()
     pass.resetViewed()
+    pass.resetInspector()
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
@@ -301,14 +345,35 @@ Panel {
     var target = Model.listScrollTargetIndex(root.searching, selectedIndex, root.suggested.length)
     if (target < 0) listView.positionViewAtBeginning()
     else listView.positionViewAtIndex(target, ListView.Contain)
+    Qt.callLater(function() { root.captureListScroll(true) })
+  }
+
+  function captureListScroll(force) {
+    if (root.restoringListScroll || !listView) return
+    var y = listView.contentY
+    var jumpedToTop = !force && y <= 0 && root.listScrollY > 1 && !listView.moving && !listView.dragging && !listView.flicking
+    if (jumpedToTop) return
+    root.listScrollY = y
+  }
+
+  function restoreListScroll() {
+    if (!listView || !root.opened) return
+    root.restoringListScroll = true
+    Qt.callLater(function() {
+      if (!listView) {
+        root.restoringListScroll = false
+        return
+      }
+      listView.contentY = Model.clampListScrollY(root.listScrollY, listView.contentHeight, listView.height)
+      Qt.callLater(function() {
+        if (listView)
+          listView.contentY = Model.clampListScrollY(root.listScrollY, listView.contentHeight, listView.height)
+        root.restoringListScroll = false
+      })
+    })
   }
 
   readonly property string maskedSecret: "••••••••"
-
-  function primaryUrl(item) {
-    if (!item || !item.urls || item.urls.length === 0) return ""
-    return String(item.urls[0] || "")
-  }
 
   function requestVisiblePreviews() {
     if (!root.opened || !root.showList) return
@@ -336,6 +401,7 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       snapshotActiveContext()
+      listScrollY = 0
       if (listView) listView.positionViewAtBeginning()
       focusSearch()
       Qt.callLater(function() {
@@ -361,11 +427,13 @@ Panel {
 
   onRecentChanged: {
     clampSelection()
+    restoreListScroll()
     if (opened) previewScrollTimer.restart()
   }
 
   onFilteredChanged: {
     clampSelection()
+    restoreListScroll()
     if (opened) previewScrollTimer.restart()
   }
 
@@ -378,7 +446,10 @@ Panel {
     id: searchDebounceTimer
     interval: 100
     repeat: false
-    onTriggered: root.debouncedFilter = root.filterText
+    onTriggered: {
+      root.listScrollY = 0
+      root.debouncedFilter = root.filterText
+    }
   }
 
   Timer {
@@ -440,7 +511,10 @@ Panel {
         }
         else if (t === "r" || t === "R") root.refresh()
         else if (t === "c" || t === "C") {
-          if (root.viewMode === "detail" && root.selectedItem) pass.copyField(root.selectedItem, "password")
+          if (root.viewMode === "detail" && root.selectedItem) {
+            var field = Model.primaryCopyField(root.selectedItem)
+            if (field) pass.copyField(root.selectedItem, field)
+          }
         }
       }
 
@@ -473,7 +547,7 @@ Panel {
 
               Text {
                 Layout.fillWidth: true
-                text: root.showCreate ? "Create Login" : (root.showDetail && root.selectedItem ? String(root.selectedItem.title || "Password") : "Passwords")
+                text: root.showCreate ? "Create Login" : (root.showDetail && root.selectedItem ? String(root.selectedItem.title || "Item") : "Proton Pass")
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title
@@ -482,8 +556,8 @@ Panel {
               }
 
               Text {
-                visible: pass.copying || pass.viewing || pass.creating || pass.generatingPassword || pass.refreshing
-                text: pass.copying ? "Copying…" : (pass.viewing ? "Loading…" : (pass.creating ? "Saving…" : (pass.generatingPassword ? "Generating…" : "Refreshing…")))
+                visible: pass.copying || pass.viewing || pass.creating || pass.generatingPassword || pass.refreshing || pass.inspecting
+                text: pass.copying ? "Copying…" : (pass.inspecting ? "Loading…" : (pass.viewing ? "Loading…" : (pass.creating ? "Saving…" : (pass.generatingPassword ? "Generating…" : "Refreshing…"))))
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -535,7 +609,10 @@ Panel {
               } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                 root.commitPendingFilter()
                 var first = Model.resolveCursorRow(root.filterText, root.suggested, root.recent, root.rankedItems, 0)
-                if (first) root.copyPasswordAndClose(first)
+                if (first) {
+                  if (Model.primaryCopyField(first)) root.copyPasswordAndClose(first)
+                  else root.openDetail(first)
+                }
                 event.accepted = true
               }
             }
@@ -573,7 +650,7 @@ Panel {
           Text {
             visible: root.showLoading
             width: parent.width
-            text: "Loading logins…"
+            text: "Loading items…"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -616,7 +693,10 @@ Panel {
 
           ListView {
             id: listView
-            visible: root.showList && root.statusHint === ""
+            opacity: root.showList && root.statusHint === "" ? 1 : 0
+            enabled: root.showList && root.statusHint === ""
+            interactive: enabled
+            z: 0
             anchors.fill: parent
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -624,7 +704,12 @@ Panel {
             cacheBuffer: Style.space(160)
             model: root.searching ? root.filtered : root.recent
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-            onContentYChanged: previewScrollTimer.restart()
+            onContentYChanged: {
+              previewScrollTimer.restart()
+              root.captureListScroll(false)
+            }
+            onMovementEnded: root.captureListScroll(true)
+            onFlickEnded: root.captureListScroll(true)
 
             header: Column {
               width: listView.width
@@ -674,79 +759,93 @@ Panel {
             footer: Text {
               visible: root.searching && root.filtered.length === 0
               width: listView.width
-              text: "No matching logins."
+              text: "No matching items."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
           }
 
-          Column {
+          Flickable {
+            id: inspectorFlick
             visible: root.showDetail
-            width: parent.width
-            spacing: Style.space(8)
+            z: 1
+            anchors.fill: parent
+            contentWidth: width
+            contentHeight: inspectorColumn.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            FieldRow {
-              label: "Username"
-              value: root.detailUsernameLoading ? "Loading…" : (root.selectedItem && Model.accountLabel(root.selectedItem) ? Model.accountLabel(root.selectedItem) : "—")
-              onCopyRequested: if (root.selectedItem && Model.accountLabel(root.selectedItem)) pass.copyText(Model.accountLabel(root.selectedItem))
-            }
+            Column {
+              id: inspectorColumn
+              width: inspectorFlick.width
+              spacing: Style.space(8)
 
-            FieldRow {
-              label: "Password"
-              value: {
-                if (pass.copying && pass.viewedField === "password") return "Copying…"
-                if (pass.viewing && pass.viewedField === "password" && pass.lastError === "") return "Loading…"
-                if (root.passwordVisible && pass.viewedField === "password" && pass.viewedValue !== "")
-                  return pass.viewedValue
-                return root.maskedSecret
+              Text {
+                visible: pass.inspecting && !pass.inspector
+                width: parent.width
+                text: "Loading…"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
               }
-              onCopyRequested: if (root.selectedItem) pass.copyField(root.selectedItem, "password")
-              onRevealRequested: {
-                if (root.passwordVisible) {
-                  root.passwordVisible = false
-                  pass.resetViewed()
-                } else if (root.selectedItem) {
-                  root.passwordVisible = true
-                  pass.viewField(root.selectedItem, "password")
+
+              Text {
+                visible: !!pass.inspector
+                width: parent.width
+                text: pass.inspector ? Model.itemTypeLabel(pass.inspector.itemType) : ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1
+              }
+
+              Repeater {
+                model: pass.inspector && pass.inspector.sections ? pass.inspector.sections : []
+
+                Column {
+                  required property var modelData
+                  width: inspectorColumn.width
+                  spacing: Style.space(4)
+
+                  PanelSectionHeader {
+                    width: parent.width
+                    text: String(modelData.title || "").toUpperCase()
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                  }
+
+                  Repeater {
+                    model: modelData.fields || []
+
+                    InspectorField {
+                      required property var modelData
+                      width: inspectorColumn.width
+                      field: modelData
+                    }
+                  }
                 }
               }
-            }
 
-            FieldRow {
-              visible: root.selectedItem && root.selectedItem.hasTotp === true
-              label: "Code"
-              value: {
-                if (pass.copying && pass.viewedField === "totp") return "Copying…"
-                if (pass.viewing && pass.viewedField === "totp" && pass.lastError === "") return "Loading…"
-                if (pass.viewedField === "totp" && pass.viewedValue !== "") return pass.viewedValue
-                return "Tap to show"
+              Text {
+                visible: pass.lastError !== ""
+                width: parent.width
+                text: pass.lastError
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
               }
-              onCopyRequested: if (root.selectedItem) pass.copyField(root.selectedItem, "totp")
-              onRevealRequested: if (root.selectedItem) pass.viewField(root.selectedItem, "totp")
-            }
-
-            FieldRow {
-              visible: root.primaryUrl(root.selectedItem) !== ""
-              label: "Website"
-              value: root.primaryUrl(root.selectedItem)
-              onCopyRequested: pass.copyText(root.primaryUrl(root.selectedItem))
-            }
-
-            Text {
-              visible: pass.lastError !== ""
-              width: parent.width
-              text: pass.lastError
-              color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
           }
 
           Flickable {
             id: createFlick
             visible: root.showCreate
+            z: 1
             anchors.fill: parent
             contentWidth: width
             contentHeight: createForm.implicitHeight
@@ -1032,14 +1131,15 @@ Panel {
     onActivated: root.openDetail(item)
   }
 
-  component FieldRow: CursorSurface {
-    id: fieldRow
-    property string label: ""
-    property string value: ""
-    property bool revealable: label === "Password" || label === "Code"
+  component InspectorField: CursorSurface {
+    id: inspectorField
+    property var field: ({})
 
-    signal copyRequested()
-    signal revealRequested()
+    readonly property string kind: field && field.kind ? String(field.kind) : "text"
+    readonly property bool revealable: kind === "secret"
+    readonly property bool wrapValue: kind === "note" || kind === "secret"
+    readonly property string label: field && field.label ? String(field.label) : ""
+    readonly property string displayValue: root.inspectorFieldValue(field)
 
     width: parent ? parent.width : implicitWidth
     foreground: root.foreground
@@ -1049,7 +1149,7 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: fieldRow.copyRequested()
+      onClicked: root.copyInspectorField(inspectorField.field)
     }
 
     RowLayout {
@@ -1066,7 +1166,7 @@ Panel {
         spacing: Style.space(1)
 
         Text {
-          text: fieldRow.label.toUpperCase()
+          text: inspectorField.label.toUpperCase()
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1076,29 +1176,31 @@ Panel {
 
         Text {
           Layout.fillWidth: true
-          text: fieldRow.value !== "" ? fieldRow.value : "—"
+          text: inspectorField.displayValue !== "" ? inspectorField.displayValue : "—"
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
-          elide: Text.ElideRight
+          wrapMode: inspectorField.wrapValue ? Text.WrapAnywhere : Text.NoWrap
+          elide: inspectorField.wrapValue ? Text.ElideNone : Text.ElideRight
         }
       }
 
       PanelActionButton {
-        visible: fieldRow.revealable
-        iconText: fieldRow.label === "Password" && root.passwordVisible ? "󰈉" : "󰈈"
-        tooltipText: fieldRow.label === "Password" && root.passwordVisible ? "Hide" : "Show"
+        visible: inspectorField.revealable
+        iconText: root.isFieldRevealed(inspectorField.field && inspectorField.field.id) ? "󰈉" : "󰈈"
+        tooltipText: root.isFieldRevealed(inspectorField.field && inspectorField.field.id) ? "Hide" : "Show"
         foreground: root.foreground
         fontFamily: root.fontFamily
-        onClicked: fieldRow.revealRequested()
+        onClicked: root.toggleFieldReveal(inspectorField.field && inspectorField.field.id)
       }
 
       PanelActionButton {
+        visible: String(inspectorField.field && inspectorField.field.field || inspectorField.field && inspectorField.field.value || "") !== ""
         iconText: "󰆏"
         tooltipText: "Copy"
         foreground: root.foreground
         fontFamily: root.fontFamily
-        onClicked: fieldRow.copyRequested()
+        onClicked: root.copyInspectorField(inspectorField.field)
       }
     }
   }

@@ -460,6 +460,9 @@ class PartialVaultTests(FetchTestCase):
         self.assertIn(f"--share-id={share_id}", args)
         self.assertNotIn("--share-id", args)
         self.assertNotIn(share_id, args)
+        self.assertNotIn("--filter-type", args)
+        self.assertIn("--filter-state", args)
+        self.assertIn("active", args)
 
 
 if __name__ == "__main__":

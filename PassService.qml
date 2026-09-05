@@ -13,6 +13,8 @@ Item {
   property bool refreshing: false
   property bool copying: false
   property bool viewing: false
+  property bool inspecting: false
+  property bool totpLoading: false
   property bool previewing: false
   property bool creating: false
   property bool generatingPassword: false
@@ -25,6 +27,9 @@ Item {
   property string copiedMessage: ""
   property string viewedValue: ""
   property string viewedField: ""
+  property var inspector: null
+  property var totpCodes: ({})
+  property int totpRemaining: 30
   property double fetchedAt: 0
 
   readonly property int cacheMs: {
@@ -34,7 +39,7 @@ Item {
     return minutes * 60 * 1000
   }
   readonly property int clipboardClearMs: Model.clipboardClearDelayMs(setting("clipboardClearSeconds", 0))
-  readonly property bool busy: fetchProcess.running || copyProcess.running || clipboardProcess.running || viewProcess.running || previewProcess.running || createProcess.running || generateProcess.running
+  readonly property bool busy: fetchProcess.running || copyProcess.running || clipboardProcess.running || viewProcess.running || previewProcess.running || createProcess.running || generateProcess.running || inspectProcess.running || totpProcess.running
   readonly property string passCli: {
     var value = String(setting("passCliPath", "pass-cli") || "pass-cli").trim()
     return value !== "" ? value : "pass-cli"
@@ -78,6 +83,15 @@ Item {
   property bool _previewTimedOut: false
   property bool _createTimedOut: false
   property bool _generateTimedOut: false
+  property bool _inspectTimedOut: false
+  property bool _totpTimedOut: false
+  property string _inspectOutput: ""
+  property string _inspectError: ""
+  property string _totpOutput: ""
+  property string _totpError: ""
+  property string _inspectShareId: ""
+  property string _inspectItemId: ""
+  property int _lastTotpRemaining: 0
   property bool _writingCache: false
   property bool _cacheHydrated: false
   property bool _dirReady: false
@@ -122,6 +136,36 @@ Item {
     viewing = false
     _viewOutput = ""
     _viewError = ""
+  }
+
+  function resetInspector(forceKill) {
+    totpTickTimer.stop()
+    inspectWatchdog.stop()
+    totpWatchdog.stop()
+    if (inspectProcess.running) {
+      if (forceKill === true) inspectProcess.signal(9)
+      else inspectProcess.signal(15)
+      inspectProcess.running = false
+    }
+    if (totpProcess.running) {
+      if (forceKill === true) totpProcess.signal(9)
+      else totpProcess.signal(15)
+      totpProcess.running = false
+    }
+    inspector = null
+    totpCodes = ({})
+    totpRemaining = 30
+    inspecting = false
+    totpLoading = false
+    _inspectOutput = ""
+    _inspectError = ""
+    _totpOutput = ""
+    _totpError = ""
+    _inspectShareId = ""
+    _inspectItemId = ""
+    _lastTotpRemaining = 0
+    _inspectTimedOut = false
+    _totpTimedOut = false
   }
 
   function appendBounded(current, chunk, limit) {
@@ -222,6 +266,44 @@ Item {
     }
     generateProcess.signal(9)
     generateProcess.running = false
+  }
+
+  function handleInspectTimeout() {
+    if (!inspectProcess.running) return
+    _inspectTimedOut = true
+    inspecting = false
+    _inspectOutput = ""
+    _inspectError = ""
+    lastError = timeoutMessage("Item lookup")
+    inspectProcess.signal(9)
+    inspectProcess.running = false
+  }
+
+  function handleTotpTimeout() {
+    if (!totpProcess.running) return
+    _totpTimedOut = true
+    totpLoading = false
+    _totpOutput = ""
+    _totpError = ""
+    totpProcess.signal(9)
+    totpProcess.running = false
+  }
+
+  function handleInspectLaunchFailure() {
+    if (inspectProcess.running || !inspecting) return
+    inspectWatchdog.stop()
+    inspecting = false
+    _inspectOutput = ""
+    _inspectError = ""
+    lastError = launchFailureMessage()
+  }
+
+  function handleTotpLaunchFailure() {
+    if (totpProcess.running || !totpLoading) return
+    totpWatchdog.stop()
+    totpLoading = false
+    _totpOutput = ""
+    _totpError = ""
   }
 
   function handleCopyLaunchFailure() {
@@ -563,6 +645,39 @@ Item {
     viewProcess.running = true
   }
 
+  function inspectItem(item) {
+    if (!item) return
+    var shareId = String(item.shareId || "")
+    var itemId = String(item.id || "")
+    if (shareId === "" || itemId === "") return
+    resetInspector()
+    lastError = ""
+    _inspectShareId = shareId
+    _inspectItemId = itemId
+    inspecting = true
+    _inspectOutput = ""
+    _inspectError = ""
+    inspectProcess.command = [root.passCli, "item", "view", "--share-id=" + shareId, "--item-id=" + itemId, "--output", "json"]
+    _inspectTimedOut = false
+    inspectWatchdog.restart()
+    inspectProcess.running = true
+  }
+
+  function refreshTotp() {
+    if (_inspectShareId === "" || _inspectItemId === "") return
+    if (totpProcess.running) {
+      totpProcess.signal(15)
+      totpProcess.running = false
+    }
+    totpLoading = true
+    _totpOutput = ""
+    _totpError = ""
+    totpProcess.command = [root.passCli, "item", "totp", "--share-id=" + _inspectShareId, "--item-id=" + _inspectItemId, "--output", "json"]
+    _totpTimedOut = false
+    totpWatchdog.restart()
+    totpProcess.running = true
+  }
+
   function previewItem(item) {
     if (!item || _previewSessionBlocked) return
     lastError = ""
@@ -572,10 +687,7 @@ Item {
   }
 
   function needsPreview(item) {
-    if (!item) return false
-    if (String(item.username || "") !== "" || String(item.email || "") !== "") return false
-    if (item.urls && item.urls.length > 0) return false
-    return Model.passUri(item, "") !== ""
+    return Model.needsPreview(item)
   }
 
   function enqueuePreview(item) {
@@ -640,6 +752,7 @@ Item {
     _previewOutput = ""
     _previewError = ""
     _pendingPreviewUpdates = ({})
+    root.resetInspector(true)
     var message = statusMessageFor(kind, stderr)
     applyStatus(kind, message)
     return true
@@ -678,7 +791,7 @@ Item {
 
   function startNextPreview(urgent) {
     if (previewProcess.running || _previewSessionBlocked) return
-    if (copyProcess.running || fetchProcess.running || viewProcess.running) {
+    if (copyProcess.running || fetchProcess.running || viewProcess.running || inspectProcess.running) {
       if (previewsEnabled) previewTimer.restart()
       return
     }
@@ -809,6 +922,37 @@ Item {
     interval: root.directCliTimeoutMs
     repeat: false
     onTriggered: root.handleGenerateTimeout()
+  }
+
+  Timer {
+    id: inspectWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleInspectTimeout()
+  }
+
+  Timer {
+    id: totpWatchdog
+    interval: root.directCliTimeoutMs
+    repeat: false
+    onTriggered: root.handleTotpTimeout()
+  }
+
+  Timer {
+    id: totpTickTimer
+    interval: 1000
+    repeat: true
+    onTriggered: {
+      if (!root.inspector || root.inspector.hasTotp !== true) {
+        stop()
+        return
+      }
+      var remaining = Model.totpSecondsRemaining(Date.now(), 30)
+      if (root._lastTotpRemaining > 0 && remaining > root._lastTotpRemaining)
+        root.refreshTotp()
+      root._lastTotpRemaining = remaining
+      root.totpRemaining = remaining
+    }
   }
 
   Component.onCompleted: ensureCacheDir.running = true
@@ -1214,6 +1358,94 @@ Item {
         root.copyFailed(message)
       }
       root._clipboardError = ""
+    }
+  }
+
+  Process {
+    id: inspectProcess
+    running: false
+    command: []
+    environment: root.passCliEnvironment
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._inspectOutput = root.appendBounded(root._inspectOutput, data, 1048576) }
+    }
+    stderr: StdioCollector { id: inspectStderr; waitForEnd: true; onStreamFinished: root._inspectError = text }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.handleInspectLaunchFailure() })
+    }
+    onExited: function(exitCode) {
+      inspectWatchdog.stop()
+      if (root._inspectTimedOut) {
+        root._inspectTimedOut = false
+        root._inspectOutput = ""
+        root._inspectError = ""
+        root.inspecting = false
+        return
+      }
+      root.inspecting = false
+      var stdout = String(root._inspectOutput || "")
+      var stderr = String(inspectStderr.text || root._inspectError || "")
+      root._inspectOutput = ""
+      root._inspectError = ""
+      if (exitCode === 0) {
+        var parsed = Model.parseItemInspector(stdout)
+        if (parsed) {
+          root.lastError = ""
+          root.inspector = parsed
+          if (parsed.hasTotp === true) {
+            root.totpRemaining = Model.totpSecondsRemaining(Date.now(), 30)
+            root._lastTotpRemaining = root.totpRemaining
+            totpTickTimer.restart()
+            root.refreshTotp()
+          }
+        } else {
+          root.inspector = null
+          root.lastError = "Could not read this item."
+        }
+      } else {
+        root.inspector = null
+        var kind = Model.classifyError(stderr || stdout, exitCode)
+        if (!root.latchSessionBlockingFailure(kind, stderr || stdout))
+          root.lastError = root.statusMessageFor(kind, stderr || stdout)
+      }
+    }
+  }
+
+  Process {
+    id: totpProcess
+    running: false
+    command: []
+    environment: root.passCliEnvironment
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._totpOutput = root.appendBounded(root._totpOutput, data, 8192) }
+    }
+    stderr: StdioCollector { id: totpStderr; waitForEnd: true; onStreamFinished: root._totpError = text }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.handleTotpLaunchFailure() })
+    }
+    onExited: function(exitCode) {
+      totpWatchdog.stop()
+      if (root._totpTimedOut) {
+        root._totpTimedOut = false
+        root._totpOutput = ""
+        root._totpError = ""
+        root.totpLoading = false
+        return
+      }
+      root.totpLoading = false
+      var stdout = String(root._totpOutput || "")
+      var stderr = String(totpStderr.text || root._totpError || "")
+      root._totpOutput = ""
+      root._totpError = ""
+      if (exitCode === 0) {
+        root.totpCodes = Model.parseTotpCodes(stdout)
+      } else {
+        var kind = Model.classifyError(stderr || stdout, exitCode)
+        if (!root.latchSessionBlockingFailure(kind, stderr || stdout))
+          root.totpCodes = ({})
+      }
     }
   }
 

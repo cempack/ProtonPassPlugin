@@ -163,8 +163,6 @@ def list_vault_items(cli: str, vault: dict) -> dict:
             "item",
             "list",
             f"--share-id={share_id}",
-            "--filter-type",
-            "login",
             "--filter-state",
             "active",
             "--output",

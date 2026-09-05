@@ -42,11 +42,80 @@ function loginPayload(raw) {
   return null
 }
 
-function isLogin(raw, payload) {
-  var type = stringField(raw, ["item_type", "itemType", "type"]).toLowerCase().replace(/_/g, "")
-  if (type === "login") return true
-  if (payload) return true
-  return false
+function canonicalItemType(value) {
+  var type = String(value || "").trim().toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-")
+  if (type === "creditcard") return "credit-card"
+  if (type === "sshkey" || type === "ssh") return "ssh-key"
+  if (type === "credit-card" || type === "ssh-key") return type
+  if (type === "login" || type === "note" || type === "alias" || type === "identity" || type === "wifi" || type === "custom")
+    return type
+  return type
+}
+
+function itemTypeFromTag(tag) {
+  var key = String(tag || "")
+  if (key === "Login" || key === "login") return "login"
+  if (key === "Note" || key === "note") return "note"
+  if (key === "Alias" || key === "alias") return "alias"
+  if (key === "CreditCard" || key === "creditCard") return "credit-card"
+  if (key === "Identity" || key === "identity") return "identity"
+  if (key === "SshKey" || key === "sshKey") return "ssh-key"
+  if (key === "Wifi" || key === "wifi") return "wifi"
+  if (key === "Custom" || key === "custom") return "custom"
+  return canonicalItemType(key)
+}
+
+function taggedContent(content) {
+  if (!content || typeof content !== "object") return { tag: "", payload: null }
+  var nested = content.content
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) nested = content
+  var keys = ["Login", "Note", "Alias", "CreditCard", "Identity", "SshKey", "Wifi", "Custom",
+    "login", "note", "alias", "creditCard", "identity", "sshKey", "wifi", "custom"]
+  for (var i = 0; i < keys.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(nested, keys[i]))
+      return { tag: keys[i], payload: nested[keys[i]] }
+  }
+  return { tag: "", payload: null }
+}
+
+function itemTypeFrom(raw) {
+  if (!raw || typeof raw !== "object") return "custom"
+  var declared = stringField(raw, ["item_type", "itemType", "type"])
+  if (declared) return canonicalItemType(declared) || "custom"
+  var tagged = taggedContent(raw.content && typeof raw.content === "object" ? raw.content : raw)
+  if (tagged.tag) return itemTypeFromTag(tagged.tag)
+  if (loginPayload(raw)) return "login"
+  if (stringField(raw, ["username"]) || stringField(raw, ["email"])) return "login"
+  if (Array.isArray(raw.urls) && raw.urls.length > 0) return "login"
+  return "custom"
+}
+
+function itemTypeLabel(type) {
+  var key = canonicalItemType(type)
+  if (key === "note") return "Note"
+  if (key === "credit-card") return "Card"
+  if (key === "identity") return "Identity"
+  if (key === "alias") return "Alias"
+  if (key === "ssh-key") return "SSH key"
+  if (key === "wifi") return "Wi-Fi"
+  if (key === "custom") return "Custom"
+  return "Login"
+}
+
+function itemTypeGlyph(item) {
+  var type = canonicalItemType(item && typeof item === "object" ? item.itemType : item)
+  if (type === "note") return "󰎞"
+  if (type === "credit-card") return "󰆛"
+  if (type === "identity") return "󰀄"
+  if (type === "alias") return "󰇮"
+  if (type === "ssh-key") return "󰣀"
+  if (type === "wifi") return "󰖩"
+  if (type === "custom") return "󰘳"
+  return "󰌆"
+}
+
+function primaryCopyField(item) {
+  return canonicalItemType(item && item.itemType) === "login" ? "password" : ""
 }
 
 function urlsFrom(payload, raw) {
@@ -68,29 +137,35 @@ function hasTotpFrom(payload) {
 
 function normalizeItem(raw, vaultName) {
   if (!raw || typeof raw !== "object") return null
-  var payload = loginPayload(raw)
-  if (!isLogin(raw, payload)) return null
-
+  var id = stringField(raw, ["id", "item_id", "itemId"])
+  if (!id) return null
+  var type = itemTypeFrom(raw)
+  var payload = type === "login" ? loginPayload(raw) : null
   var content = raw.content && typeof raw.content === "object" ? raw.content : null
   var title = stringField(raw, ["title"]) || stringField(content, ["title"])
-  var username = stringField(payload, ["username"]) || stringField(raw, ["username"])
-  var email = stringField(payload, ["email"]) || stringField(raw, ["email"])
+  var username = type === "login"
+    ? (stringField(payload, ["username"]) || stringField(raw, ["username"]))
+    : ""
+  var email = type === "login"
+    ? (stringField(payload, ["email"]) || stringField(raw, ["email"]))
+    : ""
 
   return {
-    id: stringField(raw, ["id", "item_id", "itemId"]),
+    id: id,
     shareId: stringField(raw, ["share_id", "shareId"]),
     vaultId: stringField(raw, ["vault_id", "vaultId"]),
     vaultName: String(vaultName || ""),
     title: title,
-    itemType: "login",
+    itemType: type || "custom",
     username: username,
     email: email,
-    urls: urlsFrom(payload, raw),
+    urls: type === "login" ? urlsFrom(payload, raw) : [],
     createTime: stringField(raw, ["create_time", "createTime"]),
     modifyTime: stringField(raw, ["modify_time", "modifyTime"]),
-    hasTotp: hasTotpFrom(payload),
+    hasTotp: payload ? hasTotpFrom(payload) : false,
     state: stringField(raw, ["state"]) || "Active",
-    lastUsedAt: Number(raw.lastUsedAt || raw.last_used_at || 0) || 0
+    lastUsedAt: Number(raw.lastUsedAt || raw.last_used_at || 0) || 0,
+    previewed: raw.previewed === true
   }
 }
 
@@ -149,8 +224,100 @@ function displayHost(url) {
   return s
 }
 
+function isPublicHostname(host) {
+  var h = String(host || "").trim().toLowerCase()
+  if (h.length < 3 || h.length > 253) return false
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(h)) return false
+  if (h === "localhost" || h.slice(-10) === ".localhost") return false
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false
+  return true
+}
+
+function hostFromTitle(title) {
+  var t = String(title || "").trim().toLowerCase().replace(/^www\./, "")
+  if (isPublicHostname(t)) return t
+  var compact = t.replace(/[^a-z0-9-]/g, "")
+  if (compact !== "" && isPublicHostname(compact + ".com")) return compact + ".com"
+  return ""
+}
+
+function parentHostname(host) {
+  var parts = String(host || "").toLowerCase().split(".")
+  if (parts.length < 3) return ""
+  return parts.slice(-2).join(".")
+}
+
+function faviconHosts(item) {
+  var hosts = []
+  var seen = {}
+  function add(host) {
+    var name = String(host || "").toLowerCase()
+    if (!isPublicHostname(name) || seen[name]) return
+    seen[name] = true
+    hosts.push(name)
+  }
+  var urls = item && item.urls ? item.urls : []
+  for (var i = 0; i < urls.length; i++) add(displayHost(urls[i]))
+  add(hostFromTitle(item && item.title))
+  return hosts
+}
+
+function faviconUrlForHost(host) {
+  return "https://www.google.com/s2/favicons?domain=" + encodeURIComponent(host) + "&sz=64"
+}
+
+function faviconUrls(item) {
+  var hosts = faviconHosts(item)
+  var out = []
+  var seen = {}
+  function push(url) {
+    if (!url || seen[url]) return
+    seen[url] = true
+    out.push(url)
+  }
+  for (var i = 0; i < hosts.length; i++) {
+    var host = hosts[i]
+    push("https://" + host + "/favicon.ico")
+    push(faviconUrlForHost(host))
+    var parent = parentHostname(host)
+    if (parent && isPublicHostname(parent)) push(faviconUrlForHost(parent))
+  }
+  return out
+}
+
+function faviconUrl(item) {
+  var urls = faviconUrls(item)
+  return urls.length > 0 ? urls[0] : ""
+}
+
+function nextFaviconIndex(count, index, failed) {
+  var n = parseInt(count, 10)
+  var i = parseInt(index, 10)
+  if (!isFinite(n) || n < 1) return 0
+  if (!isFinite(i) || i < 0) i = 0
+  if (failed !== true) return i
+  if (i + 1 < n) return i + 1
+  return i
+}
+
+function needsPreview(item) {
+  if (!item) return false
+  if (canonicalItemType(item.itemType || "login") !== "login") return false
+  if (item.previewed === true) return false
+  if (item.urls && item.urls.length > 0) return false
+  return passUri(item, "") !== ""
+}
+
 function itemSubtitle(item) {
   if (!item) return ""
+  var type = canonicalItemType(item.itemType)
+  if (type && type !== "login") {
+    var label = itemTypeLabel(type)
+    var vault = String(item.vaultName || "").trim()
+    var title = String(item.title || "").trim().toLowerCase()
+    if (vault && vault.toLowerCase() !== title) return label + " · " + vault
+    return label
+  }
   var urls = item.urls || []
   var parts = [item.username, item.email, displayHost(urls.length > 0 ? urls[0] : ""), item.vaultName]
   var seen = {}
@@ -184,7 +351,7 @@ function passUri(item, field) {
 }
 
 function haystackFor(item) {
-  var parts = [item.title, item.username, item.email, item.vaultName]
+  var parts = [item.title, item.username, item.email, item.vaultName, itemTypeLabel(item.itemType), canonicalItemType(item.itemType)]
   var urls = item.urls || []
   for (var i = 0; i < urls.length; i++) parts.push(urls[i], hostnameToken(urls[i]))
   return parts.join(" ").toLowerCase()
@@ -431,13 +598,285 @@ function parseItemPreview(raw) {
   if (!parsed || typeof parsed !== "object") return null
   var wrapped = parsed.item && typeof parsed.item === "object" ? parsed.item : parsed
   var item = normalizeItem(wrapped, "")
-  if (!item) return null
+  if (!item || item.itemType !== "login") return null
   return {
     username: item.username,
     email: item.email,
     urls: item.urls,
-    hasTotp: item.hasTotp === true
+    hasTotp: item.hasTotp === true,
+    previewed: true
   }
+}
+
+function scalarText(value) {
+  if (value === undefined || value === null) return ""
+  if (typeof value === "boolean" || typeof value === "number") return String(value)
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) return ""
+  if (typeof value === "object") {
+    var keys = Object.keys(value)
+    if (keys.length === 1) {
+      var inner = value[keys[0]]
+      if (inner === null || inner === undefined || Array.isArray(inner) || inner === "") return keys[0]
+    }
+  }
+  return ""
+}
+
+function makeInspectorField(id, label, kind, value, field) {
+  var text = value === undefined || value === null ? "" : String(value)
+  var fieldKind = kind || "text"
+  return {
+    id: String(id || ""),
+    label: String(label || id || ""),
+    kind: fieldKind,
+    value: fieldKind === "totp" ? "" : text,
+    field: String(field || ""),
+    revealable: fieldKind === "secret"
+  }
+}
+
+function pushInspectorField(fields, id, label, kind, value, field) {
+  var text = value === undefined || value === null ? "" : String(value)
+  if (kind !== "totp" && String(text).trim() === "") return
+  fields.push(makeInspectorField(id, label, kind, text, field))
+}
+
+function extraFieldName(entry) {
+  return stringField(entry, ["name", "field_name", "fieldName"])
+}
+
+function extraFieldValue(entry) {
+  if (!entry || typeof entry !== "object") return ""
+  if (entry.value !== undefined && entry.value !== null && typeof entry.value !== "object")
+    return String(entry.value)
+  var content = entry.content
+  if (!content || typeof content !== "object") return ""
+  if (content.Text !== undefined && content.Text !== null) return String(content.Text)
+  if (content.Hidden !== undefined && content.Hidden !== null) return String(content.Hidden)
+  if (content.Totp !== undefined && content.Totp !== null) return String(content.Totp)
+  if (content.Timestamp !== undefined && content.Timestamp !== null) return String(content.Timestamp)
+  if (content.text !== undefined && content.text !== null) return String(content.text)
+  if (content.hidden !== undefined && content.hidden !== null) return String(content.hidden)
+  return ""
+}
+
+function extraFieldKind(name, content) {
+  if (content && typeof content === "object") {
+    if (Object.prototype.hasOwnProperty.call(content, "Totp") || Object.prototype.hasOwnProperty.call(content, "totp"))
+      return "totp"
+    if (Object.prototype.hasOwnProperty.call(content, "Hidden") || Object.prototype.hasOwnProperty.call(content, "hidden"))
+      return "secret"
+  }
+  var key = String(name || "").toLowerCase()
+  if (key.indexOf("pass") >= 0 || key.indexOf("pin") >= 0 || key.indexOf("secret") >= 0 || key.indexOf("token") >= 0 || key.indexOf("cvv") >= 0)
+    return "secret"
+  return "text"
+}
+
+function extraFieldsToInspector(entries, fieldPrefix) {
+  var fields = []
+  var list = Array.isArray(entries) ? entries : []
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    var name = extraFieldName(entry)
+    if (!name) continue
+    var qualified = fieldPrefix ? fieldPrefix + "." + name : name
+    var kind = extraFieldKind(name, entry.content)
+    if (kind === "totp") pushInspectorField(fields, qualified, name, "totp", "", qualified)
+    else pushInspectorField(fields, qualified, name, kind, extraFieldValue(entry), qualified)
+  }
+  return fields
+}
+
+function customSectionBlocks(sections) {
+  var out = []
+  var list = Array.isArray(sections) ? sections : []
+  for (var i = 0; i < list.length; i++) {
+    var section = list[i]
+    if (!section || typeof section !== "object") continue
+    var title = stringField(section, ["section_name", "sectionName", "title"]) || "Section"
+    var fields = extraFieldsToInspector(section.section_fields || section.fields || [], title)
+    if (fields.length) out.push({ title: title, fields: fields })
+  }
+  return out
+}
+
+function fieldsFromSpec(payload, spec) {
+  var fields = []
+  if (!payload || typeof payload !== "object") return fields
+  for (var i = 0; i < spec.length; i++) {
+    var row = spec[i]
+    var key = row[0]
+    var label = row[1]
+    var kind = row[2] || "text"
+    var copyField = row.length > 3 ? row[3] : key
+    pushInspectorField(fields, key, label, kind, scalarText(payload[key]), copyField)
+  }
+  return fields
+}
+
+function addInspectorSection(sections, title, fields) {
+  if (fields && fields.length) sections.push({ title: title, fields: fields })
+}
+
+function attachmentFields(source) {
+  var list = []
+  if (source && Array.isArray(source.attachments)) list = source.attachments
+  var fields = []
+  for (var i = 0; i < list.length; i++) {
+    var name = stringField(list[i], ["name", "filename", "file_name", "title"])
+    if (!name) continue
+    fields.push(makeInspectorField("attachment-" + i, "File", "text", name, ""))
+  }
+  return fields
+}
+
+function inspectorHasTotp(sections) {
+  for (var i = 0; i < sections.length; i++) {
+    var fields = sections[i].fields || []
+    for (var j = 0; j < fields.length; j++) {
+      if (fields[j].kind === "totp") return true
+    }
+  }
+  return false
+}
+
+function parseItemInspector(raw) {
+  var parsed = parseJson(raw)
+  if (!parsed || typeof parsed !== "object") return null
+  var item = parsed.item && typeof parsed.item === "object" ? parsed.item : parsed
+  var content = item.content && typeof item.content === "object" ? item.content : {}
+  var tagged = taggedContent(content)
+  var type = itemTypeFrom(item)
+  if (tagged.tag) type = itemTypeFromTag(tagged.tag)
+  var payload = tagged.payload && typeof tagged.payload === "object" ? tagged.payload : {}
+  var title = stringField(item, ["title"]) || stringField(content, ["title"])
+  var sections = []
+
+  if (type === "login") {
+    var loginFields = []
+    pushInspectorField(loginFields, "username", "Username", "text", stringField(payload, ["username"]), "username")
+    pushInspectorField(loginFields, "email", "Email", "text", stringField(payload, ["email"]), "email")
+    pushInspectorField(loginFields, "password", "Password", "secret", stringField(payload, ["password"]), "password")
+    var urls = urlsFrom(payload, item)
+    for (var u = 0; u < urls.length; u++)
+      pushInspectorField(loginFields, "url-" + u, u === 0 ? "Website" : "Website " + (u + 1), "text", urls[u], "")
+    if (hasTotpFrom(payload))
+      pushInspectorField(loginFields, "totp", "Code", "totp", "", "totp")
+    addInspectorSection(sections, "Login", loginFields)
+  } else if (type === "note") {
+    addInspectorSection(sections, "Note", fieldsFromSpec({ note: stringField(content, ["note"]) }, [["note", "Note", "note", "note"]]))
+  } else if (type === "credit-card") {
+    addInspectorSection(sections, "Card", fieldsFromSpec(payload, [
+      ["cardholder_name", "Cardholder", "text"],
+      ["number", "Number", "secret"],
+      ["expiration_date", "Expiration", "text"],
+      ["verification_number", "CVC", "secret"],
+      ["pin", "PIN", "secret"]
+    ]))
+  } else if (type === "wifi") {
+    addInspectorSection(sections, "Wi-Fi", fieldsFromSpec(payload, [
+      ["ssid", "SSID", "text"],
+      ["security", "Security", "text"],
+      ["password", "Password", "secret"]
+    ]))
+    sections = sections.concat(customSectionBlocks(payload.sections))
+  } else if (type === "ssh-key") {
+    addInspectorSection(sections, "SSH key", fieldsFromSpec(payload, [
+      ["public_key", "Public key", "note", "public_key"],
+      ["private_key", "Private key", "secret", "private_key"]
+    ]))
+    sections = sections.concat(customSectionBlocks(payload.sections))
+  } else if (type === "identity") {
+    var personal = fieldsFromSpec(payload, [
+      ["full_name", "Full name", "text"],
+      ["first_name", "First name", "text"],
+      ["middle_name", "Middle name", "text"],
+      ["last_name", "Last name", "text"],
+      ["email", "Email", "text"],
+      ["phone_number", "Phone", "text"],
+      ["birthdate", "Birthdate", "text"],
+      ["gender", "Gender", "text"]
+    ]).concat(extraFieldsToInspector(payload.extra_personal_details || []))
+    var address = fieldsFromSpec(payload, [
+      ["organization", "Organization", "text"],
+      ["street_address", "Street", "text"],
+      ["zip_or_postal_code", "Postal code", "text"],
+      ["city", "City", "text"],
+      ["state_or_province", "State", "text"],
+      ["country_or_region", "Country", "text"],
+      ["floor", "Floor", "text"],
+      ["county", "County", "text"]
+    ]).concat(extraFieldsToInspector(payload.extra_address_details || []))
+    var contact = fieldsFromSpec(payload, [
+      ["social_security_number", "SSN", "secret"],
+      ["passport_number", "Passport", "secret"],
+      ["license_number", "License", "secret"],
+      ["website", "Website", "text"],
+      ["x_handle", "X", "text"],
+      ["second_phone_number", "Second phone", "text"],
+      ["linkedin", "LinkedIn", "text"],
+      ["reddit", "Reddit", "text"],
+      ["facebook", "Facebook", "text"],
+      ["yahoo", "Yahoo", "text"],
+      ["instagram", "Instagram", "text"]
+    ]).concat(extraFieldsToInspector(payload.extra_contact_details || []))
+    var work = fieldsFromSpec(payload, [
+      ["company", "Company", "text"],
+      ["job_title", "Job title", "text"],
+      ["personal_website", "Website", "text"],
+      ["work_phone_number", "Work phone", "text"],
+      ["work_email", "Work email", "text"]
+    ]).concat(extraFieldsToInspector(payload.extra_work_details || []))
+    addInspectorSection(sections, "Personal", personal)
+    addInspectorSection(sections, "Address", address)
+    addInspectorSection(sections, "Contact", contact)
+    addInspectorSection(sections, "Work", work)
+    sections = sections.concat(customSectionBlocks(payload.extra_sections))
+  } else if (type === "alias") {
+    var aliasEmail = stringField(payload, ["email", "alias_email"]) || stringField(item, ["alias_email", "email"])
+    addInspectorSection(sections, "Alias", fieldsFromSpec({ email: aliasEmail }, [["email", "Email", "text", "email"]]))
+  } else if (type === "custom") {
+    sections = sections.concat(customSectionBlocks(payload.sections))
+  }
+
+  var note = stringField(content, ["note"])
+  if (note && type !== "note")
+    addInspectorSection(sections, "Note", [makeInspectorField("note", "Note", "note", note, "note")])
+  var extras = extraFieldsToInspector(content.extra_fields || item.extra_fields || [])
+  addInspectorSection(sections, "Extra fields", extras)
+  addInspectorSection(sections, "Attachments", attachmentFields(parsed).length ? attachmentFields(parsed) : attachmentFields(item))
+
+  return {
+    title: title,
+    itemType: type || "custom",
+    hasTotp: inspectorHasTotp(sections),
+    sections: sections
+  }
+}
+
+function parseTotpCodes(raw) {
+  var parsed = parseJson(raw)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+  var out = {}
+  var keys = Object.keys(parsed)
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i]
+    var value = parsed[key]
+    if (value === undefined || value === null || String(value) === "") continue
+    out[key] = String(value)
+  }
+  return out
+}
+
+function totpSecondsRemaining(nowMs, period) {
+  var p = Number(period)
+  if (!isFinite(p) || p <= 0) p = 30
+  var sec = Math.floor(Number(nowMs) / 1000)
+  if (!isFinite(sec)) sec = 0
+  var rem = p - (sec % p)
+  return rem === 0 ? p : rem
 }
 
 function mergeItemPreview(item, preview) {
@@ -456,13 +895,15 @@ function mergeItemPreview(item, preview) {
     modifyTime: item.modifyTime,
     hasTotp: item.hasTotp,
     state: item.state,
-    lastUsedAt: Number(item.lastUsedAt || 0) || 0
+    lastUsedAt: Number(item.lastUsedAt || 0) || 0,
+    previewed: item.previewed === true
   }
   if (!preview || typeof preview !== "object") return next
   if (preview.username) next.username = String(preview.username)
   if (preview.email) next.email = String(preview.email)
   if (Array.isArray(preview.urls)) next.urls = preview.urls
   if (preview.hasTotp === true) next.hasTotp = true
+  if (preview.previewed === true) next.previewed = true
   var used = Number(preview.lastUsedAt || 0)
   if (isFinite(used) && used > next.lastUsedAt) next.lastUsedAt = used
   return next
@@ -521,7 +962,7 @@ function serializeItem(item) {
     vaultId: String(item.vaultId || ""),
     vaultName: String(item.vaultName || ""),
     title: String(item.title || ""),
-    itemType: "login",
+    itemType: canonicalItemType(item.itemType || "login") || "login",
     username: String(item.username || ""),
     email: String(item.email || ""),
     urls: Array.isArray(item.urls) ? item.urls.slice() : [],
@@ -529,7 +970,8 @@ function serializeItem(item) {
     modifyTime: String(item.modifyTime || ""),
     hasTotp: item.hasTotp === true,
     state: String(item.state || "Active"),
-    lastUsedAt: Number(item.lastUsedAt || 0) || 0
+    lastUsedAt: Number(item.lastUsedAt || 0) || 0,
+    previewed: item.previewed === true
   }
 }
 
@@ -627,6 +1069,18 @@ function resolveCursorRow(filterText, suggested, recent, rankedItems, selectedIn
   var searching = needle !== ""
   var filtered = searching ? searchItems(rankedItems || [], needle) : []
   return cursorItemAt(searching, suggested, recent, filtered, selectedIndex)
+}
+
+function clampListScrollY(y, contentHeight, viewportHeight) {
+  var view = Number(viewportHeight)
+  var height = Number(contentHeight)
+  if (!isFinite(view) || view < 0) view = 0
+  if (!isFinite(height) || height < 0) height = 0
+  var maxY = Math.max(0, height - view)
+  var v = Number(y)
+  if (!isFinite(v) || v < 0) v = 0
+  if (v > maxY) v = maxY
+  return v
 }
 
 function applyPreviewBatch(items, updates) {
