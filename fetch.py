@@ -38,9 +38,29 @@ class LockOpenError(Exception):
     """Fetch lock could not be opened safely."""
 
 
+_keyring_ready = False
+
+
+def ensure_omarchy_keyring() -> None:
+    """Use Omarchy's unlocked Default keyring before pass-cli talks to D-Bus."""
+    global _keyring_ready
+    if _keyring_ready:
+        return
+    try:
+        import ensure_keyring
+
+        ensure_keyring.repair_file()
+        ensure_keyring.ensure_collection()
+    except Exception:
+        # pass-cli still runs; a missing collection is reported as locked/unauthenticated.
+        return
+    _keyring_ready = True
+
+
 def cli_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PROTON_PASS_LINUX_KEYRING"] = "dbus"
+    ensure_omarchy_keyring()
     return env
 
 

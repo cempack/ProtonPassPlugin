@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.cempack.proton-pass",
   "name": "Proton Pass",
-    "version": "1.2.0",
+    "version": "1.2.1",
   "author": "Elliot",
   "license": "MIT",
   "description": "Search Proton Pass items and inspect logins, notes, cards, and 2FA from the Omarchy bar.",

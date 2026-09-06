@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Bind Secret Service to Omarchy's unlocked Default keyring after the desktop starts.
+set -euo pipefail
+
+for id in elliot.proton-pass io.github.cempack.proton-pass; do
+  script="$HOME/.config/omarchy/plugins/$id/ensure_keyring.py"
+  if [[ -f $script ]]; then
+    exec python3 "$script"
+  fi
+done
+
+echo "proton-pass ensure_keyring.py not installed" >&2
+exit 1

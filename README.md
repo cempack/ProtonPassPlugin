@@ -9,7 +9,7 @@ Search Proton Pass items from the Omarchy bar and inspect logins, notes, cards, 
 - `wl-copy` for clipboard copy
 - Optional: the Proton Pass desktop app (`proton-pass`) for the header's open-app buttons
 
-The plugin sets `PROTON_PASS_LINUX_KEYRING=dbus` so the session is stored in GNOME Keyring and survives reboots. After installing or switching to this, run `pass-cli login` once more (an old kernel-keyring session will not carry over).
+The plugin sets `PROTON_PASS_LINUX_KEYRING=dbus` so the session is stored in GNOME Keyring and survives reboots. On Omarchy it binds that D-Bus store to the unlocked **Default keyring** (not a new password-protected **Default Keyring**). After installing or switching to this, run `pass-cli login` once more (an old kernel-keyring session will not carry over).
 
 If `pass-cli` reports an SQLCipher HMAC, database decryption, or encryption-key mismatch after switching keyrings, run these one-time recovery commands exactly:
 

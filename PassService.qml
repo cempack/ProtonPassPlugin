@@ -955,7 +955,14 @@ Item {
     }
   }
 
-  Component.onCompleted: ensureCacheDir.running = true
+  Component.onCompleted: ensureKeyring.running = true
+
+  Process {
+    id: ensureKeyring
+    running: false
+    command: ["python3", root.pluginFile("ensure_keyring.py")]
+    onExited: ensureCacheDir.running = true
+  }
 
   Process {
     id: ensureCacheDir
