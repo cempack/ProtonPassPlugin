@@ -5,10 +5,22 @@ const assert = require("assert")
 const fs = require("fs")
 const path = require("path")
 
-const Model = new Function(
-  fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8") +
-    "\nreturn { parseItemList, parseVaultList, parseInfo, parseFetchResult, parseItemPreview, parseItemInspector: typeof parseItemInspector === 'function' ? parseItemInspector : null, parseTotpCodes: typeof parseTotpCodes === 'function' ? parseTotpCodes : null, totpSecondsRemaining: typeof totpSecondsRemaining === 'function' ? totpSecondsRemaining : null, itemTypeLabel: typeof itemTypeLabel === 'function' ? itemTypeLabel : null, itemTypeGlyph: typeof itemTypeGlyph === 'function' ? itemTypeGlyph : null, faviconUrl: typeof faviconUrl === 'function' ? faviconUrl : null, faviconUrls: typeof faviconUrls === 'function' ? faviconUrls : null, nextFaviconIndex: typeof nextFaviconIndex === 'function' ? nextFaviconIndex : null, needsPreview: typeof needsPreview === 'function' ? needsPreview : null, primaryCopyField: typeof primaryCopyField === 'function' ? primaryCopyField : null, mergeItemPreview, mergeItemLists, mergePartialItemLists: typeof mergePartialItemLists === 'function' ? mergePartialItemLists : null, applyPreviewUpdates, applyPreviewBatch, parseCache, serializeCache, vaultsFromItems, buildCreateLoginCommand, buildCreateLoginRequest: typeof buildCreateLoginRequest === 'function' ? buildCreateLoginRequest : null, clipboardClearDelayMs: typeof clipboardClearDelayMs === 'function' ? clipboardClearDelayMs : null, accountLabel, itemSubtitle, letterGlyph, passUri, searchItems, suggestedItems, recentlyCreated, recentlyUsed, withoutItems, itemKey, cursorItemCount, cursorItemAt, resolveCursorRow, rememberFailedPreviewKey, hasFailedPreviewKey, clearFailedPreviewKeys, isSessionBlockingStatus, classifyError, cleanCliText, displayError }\n"
-)()
+const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
+const MODEL_NAMES = Array.from(MODEL_SOURCE.matchAll(/^function ([A-Za-z0-9_]+)\(/gm), function (m) { return m[1] })
+const Model = new Function(MODEL_SOURCE + "\nreturn { " + MODEL_NAMES.join(", ") + " }\n")()
+
+// Items as fetch.py hands them to the panel (vault name attached per item).
+function parseList(json, vaultName) {
+  const parsed = JSON.parse(json)
+  const rows = (Array.isArray(parsed) ? parsed : parsed.items || []).map(function (row) {
+    return Object.assign({ vault_name: vaultName }, row)
+  })
+  return Model.parseFetchResult(JSON.stringify({ ok: true, items: rows })).items
+}
+
+function createArgsFor(fields) {
+  return Model.buildCreateLoginRequest(fields).args
+}
 
 function summaryList() {
   return JSON.stringify({
@@ -65,7 +77,7 @@ function secretList() {
   })
 }
 
-const summaryItems = Model.parseItemList(summaryList(), "Personal")
+const summaryItems = parseList(summaryList(), "Personal")
 assert.strictEqual(summaryItems.length, 2, "notes and other types stay in the list")
 const summaryLogin = summaryItems.find(function (item) { return item.itemType === "login" })
 const summaryNote = summaryItems.find(function (item) { return item.itemType === "note" })
@@ -81,7 +93,7 @@ assert.strictEqual(summaryNote.title, "Secret note")
 assert.ok(!("note" in summaryNote), "list metadata must not keep note bodies")
 assert.ok(!JSON.stringify(summaryItems).includes("password"))
 
-const secretItems = Model.parseItemList(secretList(), "Work")
+const secretItems = parseList(secretList(), "Work")
 assert.strictEqual(secretItems.length, 1)
 assert.strictEqual(secretItems[0].title, "Discord")
 assert.strictEqual(secretItems[0].username, "elli")
@@ -98,8 +110,6 @@ assert.ok(!secretJson.includes("otpauth"))
 assert.ok(!secretJson.includes("1234"))
 assert.ok(!secretJson.includes("do not keep"))
 
-assert.strictEqual(Model.accountLabel(secretItems[0]), "elli")
-assert.strictEqual(Model.accountLabel(summaryItems[0]), "")
 assert.strictEqual(Model.itemSubtitle(summaryLogin), "Personal")
 assert.strictEqual(Model.itemSubtitle(summaryNote), "Note · Personal")
 assert.strictEqual(Model.itemSubtitle(secretItems[0]), "elli · me@example.com · discord.com · Work")
@@ -117,8 +127,6 @@ assert.strictEqual(Model.itemSubtitle({
   vaultName: "Work"
 }), "account.proton.me · Work")
 assert.ok(!String(Model.itemSubtitle(secretItems[0])).includes("super-secret"))
-assert.strictEqual(Model.letterGlyph("Discord"), "D")
-assert.strictEqual(Model.letterGlyph("  "), "?")
 assert.strictEqual(
   Model.passUri(secretItems[0], "password"),
   "pass://share-2/item-dc/password"
@@ -147,9 +155,6 @@ assert.deepStrictEqual(
 )
 assert.deepStrictEqual(Model.suggestedItems(mixed, "", ""), [])
 
-const recent = Model.recentlyCreated(mixed, 1)
-assert.deepStrictEqual(recent.map(function (item) { return item.title }), ["Discord"])
-
 const usedFirst = Object.assign({}, summaryItems[0], { lastUsedAt: 9000 })
 const usedSecond = Object.assign({}, secretItems[0], { lastUsedAt: 1000, modifyTime: "2026-08-20T00:00:00" })
 assert.deepStrictEqual(
@@ -169,23 +174,6 @@ const skipped = Model.withoutItems(mixed, [summaryItems[0]])
 assert.deepStrictEqual(skipped.map(function (item) { return item.title }), ["Secret note", "Discord"])
 assert.strictEqual(Model.itemKey(summaryItems[0]), "share-1/item-gh")
 
-const vaults = Model.parseVaultList(JSON.stringify([
-  { share_id: "share-1", name: "Personal" },
-  { shareId: "share-2", vault_name: "Work" }
-]))
-assert.deepStrictEqual(vaults, [
-  { shareId: "share-1", name: "Personal" },
-  { shareId: "share-2", name: "Work" }
-])
-
-const info = Model.parseInfo(JSON.stringify({
-  email: "me@example.com",
-  username: "elli",
-  session_has_lock: true
-}))
-assert.strictEqual(info.ok, true)
-assert.strictEqual(info.email, "me@example.com")
-assert.strictEqual(info.sessionHasLock, true)
 
 assert.strictEqual(Model.classifyError("please login first", 1), "unauthenticated")
 assert.strictEqual(
@@ -210,8 +198,6 @@ assert.strictEqual(Model.cleanCliText("[31mERROR[0m boom"), "ERROR boom")
 assert.strictEqual(Model.displayError("[2m2026-08-14T23:55:02.359500Z[0m [31mERROR[0m [2mpass-cli/src/main.rs[0m[2m:[0m[2m332:[0m Command is not logout there is no session"), "")
 assert.strictEqual(Model.displayError("vault missing"), "vault missing")
 
-assert.deepStrictEqual(Model.parseItemList("not-json", ""), [])
-assert.deepStrictEqual(Model.parseVaultList(""), [])
 
 const fetchMissing = Model.parseFetchResult(JSON.stringify({
   ok: false,
@@ -283,38 +269,8 @@ assert.deepStrictEqual(fetchPartial.warning.failedVaultNames, ["Work"])
 assert.deepStrictEqual(fetchPartial.warning.failedShareIds, ["share-2"])
 assert.strictEqual(fetchPartial.warning.message, "Could not refresh 1 vault: Work.")
 
-const preview = Model.parseItemPreview(JSON.stringify({
-  id: "item-dc",
-  share_id: "share-2",
-  content: {
-    title: "Discord",
-    note: "secret-note",
-    content: {
-      Login: {
-        username: "elli",
-        email: "me@example.com",
-        password: "super-secret",
-        urls: ["https://discord.com"],
-        totp_uri: "otpauth://totp/Discord?secret=ABC"
-      }
-    }
-  }
-}))
-assert.strictEqual(preview.username, "elli")
-assert.strictEqual(preview.email, "me@example.com")
-assert.deepStrictEqual(preview.urls, ["https://discord.com"])
-assert.strictEqual(preview.hasTotp, true)
-assert.ok(!("password" in preview))
-assert.ok(!JSON.stringify(preview).includes("super-secret"))
-assert.ok(!JSON.stringify(preview).includes("otpauth"))
-
-const merged = Model.mergeItemPreview(summaryItems[0], preview)
-assert.strictEqual(merged.title, "GitHub")
-assert.strictEqual(merged.username, "elli")
-assert.strictEqual(merged.hasTotp, true)
-assert.ok(!("password" in merged))
-
-const incoming = Model.parseItemList(JSON.stringify({
+const merged = Object.assign({}, summaryItems[0], { username: "elli", hasTotp: true, previewed: true })
+const incoming = parseList(JSON.stringify({
   items: [
     { id: "item-gh", share_id: "share-1", title: "GitHub", item_type: "login", create_time: "2026-08-01T12:00:00" },
     { id: "item-new", share_id: "share-1", title: "New", item_type: "login", create_time: "2026-08-20T00:00:00" }
@@ -375,7 +331,7 @@ assert.deepStrictEqual(vaultsFromItems, [
 ])
 assert.deepStrictEqual(Model.vaultsFromItems([]), [])
 
-const createArgs = Model.buildCreateLoginCommand({
+const createArgs = createArgsFor({
   shareId: "share-1",
   title: "GitHub",
   username: "elli",
@@ -416,7 +372,7 @@ assert.deepStrictEqual(JSON.parse(customRequest.stdin), {
   urls: ["https://github.com"]
 })
 
-const generated = Model.buildCreateLoginCommand({
+const generated = createArgsFor({
   vaultName: "Personal",
   title: "New",
   generatePassword: true
@@ -443,7 +399,7 @@ assert.ok(!generatedRequest.args.includes("alice"))
 assert.ok(!generatedRequest.args.includes("--username"))
 
 const dashedShareId = "-XMlw7-WpkQ"
-const dashedCreate = Model.buildCreateLoginCommand({
+const dashedCreate = createArgsFor({
   shareId: dashedShareId,
   title: "GitHub",
   password: "secret"
@@ -474,108 +430,11 @@ assert.deepStrictEqual(partialMerged.map(function (item) { return item.title }),
   "Cached Work"
 ])
 
-const suggestedRows = [
-  { id: "s1", shareId: "share", title: "Suggested" },
-  { id: "s2", shareId: "share", title: "Also" }
-]
-const recentRows = [
-  { id: "r1", shareId: "share", title: "Recent One" },
-  { id: "r2", shareId: "share", title: "Recent Two" },
-  { id: "r3", shareId: "share", title: "Recent Three" }
-]
-const filteredRows = [
-  { id: "f1", shareId: "share", title: "Filtered" }
-]
-assert.strictEqual(Model.cursorItemCount(false, suggestedRows, recentRows, filteredRows), 5)
-assert.strictEqual(Model.cursorItemCount(true, suggestedRows, recentRows, filteredRows), 1)
-assert.strictEqual(Model.cursorItemAt(false, suggestedRows, recentRows, filteredRows, 0).title, "Suggested")
-assert.strictEqual(Model.cursorItemAt(false, suggestedRows, recentRows, filteredRows, 2).title, "Recent One")
-assert.strictEqual(Model.cursorItemAt(true, suggestedRows, recentRows, filteredRows, 0).title, "Filtered")
-assert.strictEqual(Model.cursorItemAt(false, suggestedRows, recentRows, filteredRows, 99), null)
-
-const baseItems = [
-  { id: "a", shareId: "s", title: "A", username: "", email: "", urls: [], hasTotp: false, lastUsedAt: 0 },
-  { id: "b", shareId: "s", title: "B", username: "", email: "", urls: [], hasTotp: false, lastUsedAt: 0 },
-  { id: "c", shareId: "s", title: "C", username: "keep", email: "", urls: [], hasTotp: false, lastUsedAt: 1 }
-]
-const batched = Model.applyPreviewUpdates(baseItems, {
-  "s/a": { username: "alice", email: "a@example.com", urls: ["https://a.example"], hasTotp: true, password: "nope", totp_uri: "otpauth://secret" },
-  "s/b": { username: "bob", password: "also-nope", totpUri: "otpauth://other" }
-})
-assert.strictEqual(batched.length, 3)
-assert.strictEqual(batched[0].username, "alice")
-assert.strictEqual(batched[0].email, "a@example.com")
-assert.deepStrictEqual(batched[0].urls, ["https://a.example"])
-assert.strictEqual(batched[0].hasTotp, true)
-assert.strictEqual(batched[1].username, "bob")
-assert.strictEqual(batched[2].username, "keep")
-assert.ok(!("password" in batched[0]) && !("password" in batched[1]))
-assert.ok(!("totp_uri" in batched[0]) && !("totpUri" in batched[1]))
-assert.ok(!JSON.stringify(batched).includes("nope"))
-assert.ok(!JSON.stringify(batched).includes("otpauth"))
-assert.ok(!JSON.stringify(batched).includes("also-nope"))
-
-const unchanged = Model.applyPreviewUpdates(baseItems, {})
-assert.strictEqual(unchanged, baseItems, "empty batch should keep the same array reference")
-
-var failedStore = { map: {}, order: [] }
-failedStore = Model.rememberFailedPreviewKey(failedStore, "s/a", 3)
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), true)
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/b"), false)
-failedStore = Model.rememberFailedPreviewKey(failedStore, "s/b", 3)
-failedStore = Model.rememberFailedPreviewKey(failedStore, "s/c", 3)
-failedStore = Model.rememberFailedPreviewKey(failedStore, "s/d", 3)
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), false, "oldest failed key is evicted at cap")
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/d"), true)
-assert.strictEqual(failedStore.order.length, 3)
-
 assert.strictEqual(Model.isSessionBlockingStatus("locked"), true)
 assert.strictEqual(Model.isSessionBlockingStatus("unauthenticated"), true)
-assert.strictEqual(Model.isSessionBlockingStatus("migration-required"), true, "classify hook ready for Task 4")
+assert.strictEqual(Model.isSessionBlockingStatus("migration-required"), true)
 assert.strictEqual(Model.isSessionBlockingStatus("error"), false)
 assert.strictEqual(Model.isSessionBlockingStatus("missing"), false)
-
-const browseFirst = { id: "browse", shareId: "share", title: "Always First" }
-const searchHit = { id: "hit", shareId: "share", title: "GitHub Token" }
-const rankedForActivation = [browseFirst, searchHit]
-const liveActivation = Model.resolveCursorRow(
-  "git",
-  [],
-  rankedForActivation,
-  rankedForActivation,
-  0
-)
-assert.strictEqual(liveActivation.title, "GitHub Token", "activation must use live query, not stale browse row")
-assert.strictEqual(
-  Model.resolveCursorRow("", [], rankedForActivation, rankedForActivation, 0).title,
-  "Always First",
-  "empty live query stays on browse selection"
-)
-assert.strictEqual(
-  Model.resolveCursorRow("missing-query", [], rankedForActivation, rankedForActivation, 0),
-  null,
-  "live query with no matches yields no activation target"
-)
-
-failedStore = Model.rememberFailedPreviewKey({ map: {}, order: [] }, "s/a", 8)
-failedStore = Model.rememberFailedPreviewKey(failedStore, "s/b", 8)
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), true)
-failedStore = Model.clearFailedPreviewKeys()
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/a"), false)
-assert.strictEqual(Model.hasFailedPreviewKey(failedStore, "s/b"), false)
-assert.deepStrictEqual(failedStore.order, [])
-
-const batchResult = Model.applyPreviewBatch(baseItems, {
-  "s/a": { username: "alice", password: "secret-batch" },
-  "s/b": { username: "bob", totp_uri: "otpauth://batch" }
-})
-assert.strictEqual(batchResult.items[0].username, "alice")
-assert.strictEqual(batchResult.updated.length, 2, "batch returns touched rows without rescanning")
-assert.strictEqual(batchResult.updated[0].username, "alice")
-assert.strictEqual(batchResult.updated[1].username, "bob")
-assert.ok(!JSON.stringify(batchResult).includes("secret-batch"))
-assert.ok(!JSON.stringify(batchResult).includes("otpauth"))
-assert.deepStrictEqual(Model.applyPreviewBatch(baseItems, {}).updated, [])
 
 assert.strictEqual(typeof Model.parseItemInspector, "function")
 assert.strictEqual(typeof Model.parseTotpCodes, "function")
@@ -602,14 +461,16 @@ assert.strictEqual(Model.primaryCopyField({ itemType: "note" }), "")
 assert.strictEqual(Model.primaryCopyField({ itemType: "credit-card" }), "")
 assert.ok(Model.itemTypeGlyph({ itemType: "note" }))
 assert.notStrictEqual(Model.itemTypeGlyph({ itemType: "note" }), Model.itemTypeGlyph({ itemType: "login" }))
-assert.strictEqual(typeof Model.faviconUrl, "function")
+function firstFavicon(item) {
+  return Model.faviconUrls(item)[0] || ""
+}
 function gicon(host) {
   return "https://www.google.com/s2/favicons?domain=" + host + "&sz=64"
 }
 function originIcon(host) {
   return "https://" + host + "/favicon.ico"
 }
-assert.strictEqual(Model.faviconUrl({ urls: ["https://github.com/login"] }), originIcon("github.com"))
+assert.strictEqual(firstFavicon({ urls: ["https://github.com/login"] }), originIcon("github.com"))
 assert.deepStrictEqual(Model.faviconUrls({ urls: ["https://github.com/login"] }), [
   originIcon("github.com"),
   gicon("github.com")
@@ -628,17 +489,17 @@ assert.deepStrictEqual(Model.faviconUrls({ title: "id.sinch.com", urls: [] }), [
   gicon("id.sinch.com"),
   gicon("sinch.com")
 ])
-assert.strictEqual(Model.faviconUrl({ title: "git.elliotmoreau.fr", username: "git" }), originIcon("git.elliotmoreau.fr"))
-assert.strictEqual(Model.faviconUrl({ title: "Stripe", urls: [] }), originIcon("stripe.com"))
-assert.strictEqual(Model.faviconUrl({ title: "nvidia" }), originIcon("nvidia.com"))
-assert.strictEqual(Model.faviconUrl({ title: "RandomApp", email: "me@gmail.com" }), originIcon("randomapp.com"))
-assert.ok(!String(Model.faviconUrl({ title: "RandomApp", email: "me@gmail.com" })).includes("gmail.com"), "consumer mail hosts are not icons")
-assert.strictEqual(Model.faviconUrl({ urls: [] }), "")
-assert.strictEqual(Model.faviconUrl(null), "")
-assert.strictEqual(Model.faviconUrl({ urls: ["javascript:alert(1)"] }), "")
-assert.strictEqual(Model.faviconUrl({ urls: ["https://127.0.0.1/login"] }), "")
-assert.strictEqual(Model.faviconUrl({ urls: ["https://192.168.0.10/"] }), "")
-assert.strictEqual(Model.faviconUrl({ urls: ["https://localhost/"] }), "")
+assert.strictEqual(firstFavicon({ title: "git.elliotmoreau.fr", username: "git" }), originIcon("git.elliotmoreau.fr"))
+assert.strictEqual(firstFavicon({ title: "Stripe", urls: [] }), originIcon("stripe.com"))
+assert.strictEqual(firstFavicon({ title: "nvidia" }), originIcon("nvidia.com"))
+assert.strictEqual(firstFavicon({ title: "RandomApp", email: "me@gmail.com" }), originIcon("randomapp.com"))
+assert.ok(!String(firstFavicon({ title: "RandomApp", email: "me@gmail.com" })).includes("gmail.com"), "consumer mail hosts are not icons")
+assert.strictEqual(firstFavicon({ urls: [] }), "")
+assert.strictEqual(firstFavicon(null), "")
+assert.strictEqual(firstFavicon({ urls: ["javascript:alert(1)"] }), "")
+assert.strictEqual(firstFavicon({ urls: ["https://127.0.0.1/login"] }), "")
+assert.strictEqual(firstFavicon({ urls: ["https://192.168.0.10/"] }), "")
+assert.strictEqual(firstFavicon({ urls: ["https://localhost/"] }), "")
 assert.ok(!String(Model.faviconUrls({ urls: ["https://evil.com/x"] }).join(" ")).includes("evil.com/x"))
 assert.ok(Model.faviconUrls({ urls: ["https://stripe.com"] }).some(function (url) {
   return url.indexOf("google.com/s2/favicons") >= 0 && url.indexOf(".ico") < 0
@@ -679,33 +540,12 @@ assert.strictEqual(Model.nextFaviconIndex(2, 1, true), 1)
 assert.strictEqual(Model.nextFaviconIndex(2, 0, false), 0)
 assert.strictEqual(Model.nextFaviconIndex(0, 0, true), 0)
 
-assert.strictEqual(typeof Model.needsPreview, "function")
-assert.strictEqual(Model.needsPreview({
-  id: "a", shareId: "s", itemType: "login", username: "ada", urls: []
-}), true, "cached usernames must not skip website preview")
-assert.strictEqual(Model.needsPreview({
-  id: "a", shareId: "s", itemType: "login", username: "ada", urls: ["https://stripe.com"]
-}), false)
-assert.strictEqual(Model.needsPreview({
-  id: "a", shareId: "s", itemType: "login", username: "ada", urls: [], previewed: true
-}), false)
-assert.strictEqual(Model.needsPreview({
-  id: "a", shareId: "s", itemType: "note", urls: []
-}), false)
-
 assert.strictEqual(
   Model.searchItems([{ title: "Home", itemType: "wifi", vaultName: "Personal" }], "wifi").length,
   1,
   "type labels are searchable"
 )
 
-const notePreview = Model.parseItemPreview(JSON.stringify({
-  id: "item-note",
-  share_id: "share-1",
-  item_type: "note",
-  content: { title: "Secret note", note: "body stays in inspector", content: { Note: {} } }
-}))
-assert.strictEqual(notePreview, null, "item view previews stay login-only")
 
 const cachedNote = Model.serializeCache("me@example.com", 1, [summaryNote], 0)
 assert.strictEqual(cachedNote.items[0].itemType, "note")

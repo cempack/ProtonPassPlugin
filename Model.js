@@ -169,52 +169,6 @@ function normalizeItem(raw, vaultName) {
   }
 }
 
-function parseItemList(raw, vaultName) {
-  var parsed = parseJson(raw)
-  if (parsed === null) return []
-  var rows = asArray(parsed)
-  var out = []
-  for (var i = 0; i < rows.length; i++) {
-    var item = normalizeItem(rows[i], vaultName)
-    if (item) out.push(item)
-  }
-  return out
-}
-
-function parseVaultList(raw) {
-  var parsed = parseJson(raw)
-  if (parsed === null) return []
-  var rows = asArray(parsed)
-  var out = []
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i]
-    if (!row || typeof row !== "object") continue
-    var shareId = stringField(row, ["share_id", "shareId", "id"])
-    if (!shareId) continue
-    out.push({
-      shareId: shareId,
-      name: stringField(row, ["name", "vault_name", "vaultName", "display_name"]) || shareId
-    })
-  }
-  return out
-}
-
-function parseInfo(raw) {
-  var parsed = parseJson(raw)
-  if (!parsed || typeof parsed !== "object") return { ok: false }
-  return {
-    ok: true,
-    email: stringField(parsed, ["email"]),
-    username: stringField(parsed, ["username"]),
-    sessionHasLock: parsed.session_has_lock === true || parsed.sessionHasLock === true
-  }
-}
-
-function accountLabel(item) {
-  if (!item) return ""
-  return String(item.username || item.email || "")
-}
-
 function displayHost(url) {
   var s = String(url || "").trim()
   if (s === "") return ""
@@ -285,11 +239,6 @@ function faviconUrls(item) {
   return out
 }
 
-function faviconUrl(item) {
-  var urls = faviconUrls(item)
-  return urls.length > 0 ? urls[0] : ""
-}
-
 function nextFaviconIndex(count, index, failed) {
   var n = parseInt(count, 10)
   var i = parseInt(index, 10)
@@ -298,14 +247,6 @@ function nextFaviconIndex(count, index, failed) {
   if (failed !== true) return i
   if (i + 1 < n) return i + 1
   return i
-}
-
-function needsPreview(item) {
-  if (!item) return false
-  if (canonicalItemType(item.itemType || "login") !== "login") return false
-  if (item.previewed === true) return false
-  if (item.urls && item.urls.length > 0) return false
-  return passUri(item, "") !== ""
 }
 
 function itemSubtitle(item) {
@@ -335,12 +276,6 @@ function itemSubtitle(item) {
   return out.join(" · ")
 }
 
-function letterGlyph(title) {
-  var text = String(title || "")
-  var match = text.match(/[A-Za-z0-9]/)
-  return match ? match[0].toUpperCase() : "?"
-}
-
 function passUri(item, field) {
   if (!item) return ""
   var shareId = String(item.shareId || "")
@@ -367,15 +302,36 @@ function hostnameToken(url) {
   return s
 }
 
+// Every whitespace-separated term must match; results are ranked so title hits
+// beat host hits, which beat username/vault hits. Ties keep the input order.
 function searchItems(items, query) {
   var list = items || []
-  var needle = String(query || "").trim().toLowerCase()
-  if (!needle) return list.slice()
-  var out = []
+  var terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(function (t) { return t !== "" })
+  if (terms.length === 0) return list.slice()
+  var scored = []
   for (var i = 0; i < list.length; i++) {
-    if (haystackFor(list[i]).indexOf(needle) >= 0) out.push(list[i])
+    var score = searchScore(list[i], terms)
+    if (score > 0) scored.push({ item: list[i], score: score, index: i })
   }
-  return out
+  scored.sort(function (a, b) { return b.score - a.score || a.index - b.index })
+  return scored.map(function (entry) { return entry.item })
+}
+
+function searchScore(item, terms) {
+  var title = String(item.title || "").toLowerCase()
+  var hosts = (item.urls || []).map(hostnameToken).join(" ")
+  var haystack = haystackFor(item)
+  var total = 0
+  for (var i = 0; i < terms.length; i++) {
+    var term = terms[i]
+    if (haystack.indexOf(term) < 0) return 0
+    if (title.indexOf(term) === 0) total += 40
+    else if (new RegExp("\\b" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(title)) total += 25
+    else if (title.indexOf(term) >= 0) total += 15
+    else if (hosts.indexOf(term) >= 0) total += 10
+    else total += 3
+  }
+  return total
 }
 
 function suggestedItems(items, appId, title, limit) {
@@ -401,16 +357,6 @@ function suggestedItems(items, appId, title, limit) {
   var cap = parseInt(limit, 10)
   if (!isFinite(cap) || cap < 0) return out
   return out.slice(0, cap)
-}
-
-function recentlyCreated(items, limit) {
-  var list = (items || []).slice()
-  list.sort(function (a, b) {
-    return String(b.createTime || "").localeCompare(String(a.createTime || ""))
-  })
-  var cap = parseInt(limit, 10)
-  if (!isFinite(cap) || cap < 0) cap = list.length
-  return list.slice(0, cap)
 }
 
 function usageTime(item) {
@@ -590,21 +536,6 @@ function parseFetchResult(raw) {
     email: stringField(parsed, ["email", "username"]),
     items: items,
     warning: parseFetchWarning(parsed.warning)
-  }
-}
-
-function parseItemPreview(raw) {
-  var parsed = parseJson(raw)
-  if (!parsed || typeof parsed !== "object") return null
-  var wrapped = parsed.item && typeof parsed.item === "object" ? parsed.item : parsed
-  var item = normalizeItem(wrapped, "")
-  if (!item || item.itemType !== "login") return null
-  return {
-    username: item.username,
-    email: item.email,
-    urls: item.urls,
-    hasTotp: item.hasTotp === true,
-    previewed: true
   }
 }
 
@@ -879,36 +810,6 @@ function totpSecondsRemaining(nowMs, period) {
   return rem === 0 ? p : rem
 }
 
-function mergeItemPreview(item, preview) {
-  if (!item || typeof item !== "object") return item
-  var next = {
-    id: item.id,
-    shareId: item.shareId,
-    vaultId: item.vaultId,
-    vaultName: item.vaultName,
-    title: item.title,
-    itemType: item.itemType,
-    username: item.username,
-    email: item.email,
-    urls: item.urls,
-    createTime: item.createTime,
-    modifyTime: item.modifyTime,
-    hasTotp: item.hasTotp,
-    state: item.state,
-    lastUsedAt: Number(item.lastUsedAt || 0) || 0,
-    previewed: item.previewed === true
-  }
-  if (!preview || typeof preview !== "object") return next
-  if (preview.username) next.username = String(preview.username)
-  if (preview.email) next.email = String(preview.email)
-  if (Array.isArray(preview.urls)) next.urls = preview.urls
-  if (preview.hasTotp === true) next.hasTotp = true
-  if (preview.previewed === true) next.previewed = true
-  var used = Number(preview.lastUsedAt || 0)
-  if (isFinite(used) && used > next.lastUsedAt) next.lastUsedAt = used
-  return next
-}
-
 function itemKey(item) {
   if (!item) return ""
   return String(item.shareId || "") + "/" + String(item.id || "")
@@ -926,7 +827,7 @@ function mergeItemLists(previous, incoming) {
   for (var j = 0; j < list.length; j++) {
     var item = list[j]
     var cached = prev[itemKey(item)]
-    out.push(cached ? mergeItemPreview(item, cached) : item)
+    out.push(cached ? mergeCached(item, cached) : item)
   }
   return out
 }
@@ -1035,148 +936,9 @@ function vaultsFromItems(items) {
   return out
 }
 
-function listRowCursorIndex(searching, suggestedLength, delegateIndex) {
-  return searching ? delegateIndex : Number(suggestedLength || 0) + delegateIndex
-}
-
-function listScrollTargetIndex(searching, selectedIndex, suggestedLength) {
-  if (!searching && selectedIndex < suggestedLength) return -1
-  var idx = searching ? selectedIndex : selectedIndex - suggestedLength
-  return idx >= 0 ? idx : -1
-}
-
-function cursorItemCount(searching, suggested, recent, filtered) {
-  if (searching) return (filtered || []).length
-  return (suggested || []).length + (recent || []).length
-}
-
-function cursorItemAt(searching, suggested, recent, filtered, index) {
-  var idx = Number(index)
-  if (!isFinite(idx) || idx < 0) return null
-  if (searching) {
-    var rows = filtered || []
-    return idx < rows.length ? rows[idx] : null
-  }
-  var left = suggested || []
-  if (idx < left.length) return left[idx]
-  var right = recent || []
-  var offset = idx - left.length
-  return offset < right.length ? right[offset] : null
-}
-
-function resolveCursorRow(filterText, suggested, recent, rankedItems, selectedIndex) {
-  var needle = String(filterText || "").trim()
-  var searching = needle !== ""
-  var filtered = searching ? searchItems(rankedItems || [], needle) : []
-  return cursorItemAt(searching, suggested, recent, filtered, selectedIndex)
-}
-
-function clampListScrollY(y, contentHeight, viewportHeight) {
-  var view = Number(viewportHeight)
-  var height = Number(contentHeight)
-  if (!isFinite(view) || view < 0) view = 0
-  if (!isFinite(height) || height < 0) height = 0
-  var maxY = Math.max(0, height - view)
-  var v = Number(y)
-  if (!isFinite(v) || v < 0) v = 0
-  if (v > maxY) v = maxY
-  return v
-}
-
-function applyPreviewBatch(items, updates) {
-  var list = items || []
-  var map = updates && typeof updates === "object" && !Array.isArray(updates) ? updates : null
-  if (!map) return { items: list, updated: [] }
-  var keys = Object.keys(map)
-  if (keys.length === 0) return { items: list, updated: [] }
-  var out = []
-  var updated = []
-  var changed = false
-  for (var i = 0; i < list.length; i++) {
-    var current = list[i]
-    var key = itemKey(current)
-    if (key !== "/" && Object.prototype.hasOwnProperty.call(map, key)) {
-      var merged = mergeItemPreview(current, map[key])
-      out.push(merged)
-      updated.push(merged)
-      changed = true
-    } else {
-      out.push(current)
-    }
-  }
-  return { items: changed ? out : list, updated: updated }
-}
-
-function applyPreviewUpdates(items, updates) {
-  return applyPreviewBatch(items, updates).items
-}
-
-function rememberFailedPreviewKey(store, key, maxSize) {
-  var value = String(key || "")
-  var cap = parseInt(maxSize, 10)
-  if (!isFinite(cap) || cap < 1) cap = 64
-  var current = store && typeof store === "object" ? store : { map: {}, order: [] }
-  var map = {}
-  var order = []
-  var prevMap = current.map && typeof current.map === "object" ? current.map : {}
-  var prevOrder = Array.isArray(current.order) ? current.order : []
-  for (var i = 0; i < prevOrder.length; i++) {
-    var existing = String(prevOrder[i] || "")
-    if (!existing || existing === value || !prevMap[existing]) continue
-    map[existing] = true
-    order.push(existing)
-  }
-  if (value !== "") {
-    map[value] = true
-    order.push(value)
-  }
-  while (order.length > cap) {
-    var dropped = order.shift()
-    delete map[dropped]
-  }
-  return { map: map, order: order }
-}
-
-function hasFailedPreviewKey(store, key) {
-  if (!store || typeof store !== "object" || !store.map) return false
-  var value = String(key || "")
-  if (value === "") return false
-  return store.map[value] === true
-}
-
-function clearFailedPreviewKeys() {
-  return { map: {}, order: [] }
-}
-
 function isSessionBlockingStatus(status) {
   var kind = String(status || "")
   return kind === "locked" || kind === "unauthenticated" || kind === "migration-required"
-}
-
-function visiblePreviewWindow(searching, suggested, list, viewport) {
-  var out = []
-  if (!searching) {
-    var suggestedItems = suggested || []
-    for (var i = 0; i < suggestedItems.length; i++) out.push(suggestedItems[i])
-  }
-  var rows = list || []
-  if (rows.length === 0) return out
-  var vp = viewport && typeof viewport === "object" ? viewport : {}
-  var start = 0
-  var last = Math.min(rows.length - 1, 11)
-  if (Number(vp.height) > 0) {
-    var top = Number(vp.indexAtTop)
-    var bottom = Number(vp.indexAtBottom)
-    if (!isFinite(top) || top < 0) {
-      top = Math.floor(Math.max(0, Number(vp.contentY) || 0) / Math.max(1, Number(vp.rowHeight) || 44))
-    }
-    if (!isFinite(bottom) || bottom < top) bottom = top + 11
-    start = Math.max(0, top)
-    last = Math.min(rows.length - 1, bottom)
-    if (last - start > 11) last = start + 11
-  }
-  for (var j = start; j <= last; j++) out.push(rows[j])
-  return out
 }
 
 function createLoginUrls(data) {
@@ -1199,10 +961,6 @@ function clipboardClearDelayMs(seconds) {
   if (!isFinite(value) || value < 0) value = 0
   if (value > 300) value = 300
   return value * 1000
-}
-
-function buildCreateLoginCommand(fields) {
-  return buildCreateLoginRequest(fields).args
 }
 
 function buildCreateLoginRequest(fields) {
@@ -1235,3 +993,286 @@ function buildCreateLoginRequest(fields) {
     needsPasswordGeneration: false
   }
 }
+
+// ── Item merging ──────────────────────────────────────────────────────────────
+
+// Shallow copy of an item with some fields replaced.
+function withChanges(item, patch) {
+  if (!item || typeof item !== "object") return item
+  var next = {}
+  var keys = Object.keys(item)
+  for (var i = 0; i < keys.length; i++) next[keys[i]] = item[keys[i]]
+  var changes = patch || {}
+  var changed = Object.keys(changes)
+  for (var j = 0; j < changed.length; j++) next[changed[j]] = changes[changed[j]]
+  return next
+}
+
+// A fresh item from pass-cli wins, except for local usage time and, when the
+// listing came back without login details, the details we already knew.
+function mergeCached(fresh, cached) {
+  var patch = {}
+  var used = Math.max(Number(fresh.lastUsedAt || 0) || 0, Number(cached.lastUsedAt || 0) || 0)
+  if (used > 0) patch.lastUsedAt = used
+  if (fresh.previewed !== true && cached.previewed === true) {
+    patch.username = fresh.username || cached.username || ""
+    patch.email = fresh.email || cached.email || ""
+    patch.urls = fresh.urls && fresh.urls.length > 0 ? fresh.urls : (cached.urls || [])
+    patch.hasTotp = fresh.hasTotp === true || cached.hasTotp === true
+    patch.previewed = true
+  }
+  return withChanges(fresh, patch)
+}
+
+// ── Filters ───────────────────────────────────────────────────────────────────
+
+var FILTER_ORDER = ["all", "totp", "login", "alias", "note", "credit-card", "identity", "ssh-key", "wifi", "custom"]
+
+function filterLabel(key) {
+  if (key === "all") return "All"
+  if (key === "totp") return "2FA"
+  if (key === "login") return "Logins"
+  if (key === "alias") return "Aliases"
+  if (key === "note") return "Notes"
+  if (key === "credit-card") return "Cards"
+  if (key === "identity") return "Identities"
+  if (key === "ssh-key") return "SSH"
+  if (key === "wifi") return "Wi-Fi"
+  return "Other"
+}
+
+function filterGlyph(key) {
+  if (key === "all") return "󰒺"
+  if (key === "totp") return "󰦯"
+  return itemTypeGlyph(key)
+}
+
+function matchesFilter(item, filter) {
+  if (!item) return false
+  var key = String(filter || "all")
+  if (key === "all") return true
+  if (key === "totp") return item.hasTotp === true
+  return canonicalItemType(item.itemType) === key
+}
+
+function matchesVault(item, shareId) {
+  return !shareId || String(item && item.shareId || "") === String(shareId)
+}
+
+function filterItems(items, filter, shareId) {
+  var list = items || []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    if (matchesVault(list[i], shareId) && matchesFilter(list[i], filter)) out.push(list[i])
+  }
+  return out
+}
+
+// Chips for the filter bar: "All" and every filter that has at least one item.
+function filterChips(items, shareId) {
+  var counts = {}
+  var list = items || []
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i]
+    if (!matchesVault(item, shareId)) continue
+    counts.all = (counts.all || 0) + 1
+    if (item.hasTotp === true) counts.totp = (counts.totp || 0) + 1
+    var type = canonicalItemType(item.itemType) || "custom"
+    counts[type] = (counts[type] || 0) + 1
+  }
+  var chips = []
+  for (var j = 0; j < FILTER_ORDER.length; j++) {
+    var key = FILTER_ORDER[j]
+    if (key !== "all" && !counts[key]) continue
+    chips.push({ key: key, label: filterLabel(key), glyph: filterGlyph(key), count: counts[key] || 0 })
+  }
+  return chips
+}
+
+function nextFilter(chips, current, step) {
+  var list = chips || []
+  if (list.length === 0) return "all"
+  var index = 0
+  for (var i = 0; i < list.length; i++) if (list[i].key === current) index = i
+  index = (index + step + list.length) % list.length
+  return list[index].key
+}
+
+// ── List rows ─────────────────────────────────────────────────────────────────
+
+// Flat rows for the list view: section headers and items. `items` lists the row
+// index of every item so the keyboard cursor can skip headers.
+function buildListRows(sections) {
+  var rows = []
+  var itemRows = []
+  var seen = {}
+  var list = sections || []
+  for (var i = 0; i < list.length; i++) {
+    var section = list[i]
+    var entries = []
+    var sectionItems = section.items || []
+    for (var j = 0; j < sectionItems.length; j++) {
+      var key = itemKey(sectionItems[j])
+      if (key === "/" || seen[key]) continue
+      seen[key] = true
+      entries.push(sectionItems[j])
+    }
+    if (entries.length === 0) continue
+    if (section.title) rows.push({ kind: "header", title: section.title, count: entries.length, key: "h:" + section.title })
+    for (var k = 0; k < entries.length; k++) {
+      itemRows.push(rows.length)
+      rows.push({ kind: "item", item: entries[k], key: itemKey(entries[k]), cursor: itemRows.length - 1 })
+    }
+  }
+  return { rows: rows, items: itemRows }
+}
+
+// ── Live 2FA ──────────────────────────────────────────────────────────────────
+
+function totpShareIds(items) {
+  var seen = {}
+  var out = []
+  var list = items || []
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i]
+    var shareId = item && item.hasTotp === true ? String(item.shareId || "") : ""
+    if (shareId && !seen[shareId]) {
+      seen[shareId] = true
+      out.push(shareId)
+    }
+  }
+  return out
+}
+
+function parseTotpFeedLine(line) {
+  var parsed = parseJson(line)
+  if (!parsed || typeof parsed !== "object") return null
+  if (parsed.ok !== true) return { ok: false, status: String(parsed.status || "error"), codes: {} }
+  var codes = {}
+  var raw = parsed.codes && typeof parsed.codes === "object" ? parsed.codes : {}
+  var keys = Object.keys(raw)
+  for (var i = 0; i < keys.length; i++) {
+    var entry = raw[keys[i]]
+    if (!entry || !/^\d{6,8}$/.test(String(entry.code || ""))) continue
+    codes[keys[i]] = {
+      code: String(entry.code),
+      period: Number(entry.period) || 30,
+      expires: Number(entry.expires) || 0
+    }
+  }
+  return { ok: true, status: "ready", codes: codes }
+}
+
+// The live code for an item at `nowMs`, or null when there is none or it expired.
+function liveCode(codes, item, nowMs) {
+  var entry = codes ? codes[itemKey(item)] : null
+  if (!entry) return null
+  var remaining = entry.expires - Math.floor(Number(nowMs) / 1000)
+  if (remaining <= 0 || remaining > entry.period) return null
+  return { code: entry.code, remaining: remaining, fraction: remaining / entry.period }
+}
+
+function formatCode(code) {
+  var text = String(code || "")
+  if (text.length === 6) return text.slice(0, 3) + " " + text.slice(3)
+  if (text.length === 8) return text.slice(0, 4) + " " + text.slice(4)
+  return text
+}
+
+// ── Generator ─────────────────────────────────────────────────────────────────
+
+var PASSPHRASE_SEPARATORS = ["hyphens", "spaces", "periods", "commas", "underscores", "numbers", "numbers-and-symbols"]
+
+function clampInt(value, min, max, fallback) {
+  var n = parseInt(value, 10)
+  if (!isFinite(n)) n = fallback
+  return Math.max(min, Math.min(max, n))
+}
+
+function generatorOptions(options) {
+  var o = options || {}
+  var mode = o.mode === "passphrase" ? "passphrase" : "random"
+  return {
+    mode: mode,
+    length: clampInt(o.length, 8, 64, 20),
+    uppercase: o.uppercase !== false,
+    numbers: o.numbers !== false,
+    symbols: o.symbols !== false,
+    words: clampInt(o.words, 3, 10, 5),
+    separator: PASSPHRASE_SEPARATORS.indexOf(o.separator) >= 0 ? o.separator : "hyphens",
+    capitalise: o.capitalise !== false
+  }
+}
+
+function generatorArgs(options) {
+  var o = generatorOptions(options)
+  if (o.mode === "passphrase") {
+    return ["password", "generate", "passphrase",
+      "--count", String(o.words),
+      "--separator", o.separator,
+      "--capitalise", String(o.capitalise),
+      "--numbers", String(o.numbers),
+      "--output", "json"]
+  }
+  return ["password", "generate", "random",
+    "--length", String(o.length),
+    "--uppercase", String(o.uppercase),
+    "--numbers", String(o.numbers),
+    "--symbols", String(o.symbols),
+    "--output", "json"]
+}
+
+function parseGeneratedPassword(raw) {
+  var parsed = parseJson(raw)
+  if (parsed && typeof parsed === "object" && typeof parsed.password === "string") return parsed.password
+  var text = String(raw || "").replace(/\r?\n$/, "")
+  return text.indexOf("\n") < 0 && text.charAt(0) !== "{" ? text : ""
+}
+
+// Entropy of the generator settings (not of a specific password), in bits.
+function generatorStrength(options) {
+  var o = generatorOptions(options)
+  var bits
+  if (o.mode === "passphrase") {
+    bits = o.words * Math.log(7776) / Math.LN2
+    if (o.numbers) bits += o.words * Math.log(10) / Math.LN2 * 0.5
+    if (o.capitalise) bits += 1
+  } else {
+    var pool = 26 + (o.uppercase ? 26 : 0) + (o.numbers ? 10 : 0) + (o.symbols ? 30 : 0)
+    bits = o.length * Math.log(pool) / Math.LN2
+  }
+  bits = Math.round(bits)
+  var level = bits >= 100 ? 4 : bits >= 75 ? 3 : bits >= 55 ? 2 : bits >= 40 ? 1 : 0
+  var labels = ["Weak", "Fair", "Good", "Strong", "Excellent"]
+  return { bits: bits, level: level, label: labels[level], fraction: Math.min(1, bits / 120) }
+}
+
+// ── Misc ──────────────────────────────────────────────────────────────────────
+
+function fieldLabel(field) {
+  var key = String(field || "")
+  if (key === "password") return "Password"
+  if (key === "username") return "Username"
+  if (key === "email") return "Email"
+  if (key === "totp") return "2FA code"
+  if (key === "") return "Value"
+  return key.charAt(0).toUpperCase() + key.slice(1)
+}
+
+// http(s) URL to hand to xdg-open, or "" when the value is not a web address.
+function openableUrl(value) {
+  var text = String(value || "").trim()
+  if (text === "" || /\s/.test(text)) return ""
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(text)) text = "https://" + text
+  return /^https?:\/\/[^\/\s]+/i.test(text) ? text : ""
+}
+
+function primaryUrl(item) {
+  var urls = item && item.urls ? item.urls : []
+  for (var i = 0; i < urls.length; i++) {
+    var url = openableUrl(urls[i])
+    if (url !== "") return url
+  }
+  return ""
+}
+
