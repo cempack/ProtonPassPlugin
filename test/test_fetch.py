@@ -94,6 +94,95 @@ class SessionDirTests(FetchTestCase):
             self.assertEqual(fetch.cli_env()["PROTON_PASS_SESSION_DIR"], "/custom")
 
 
+def _secret_login(item_id: str = "i1", share_id: str = "s1") -> dict:
+    return {
+        "id": item_id,
+        "share_id": share_id,
+        "vault_id": "v1",
+        "state": "Active",
+        "flags": ["Pinned"],
+        "create_time": "2026-01-01T00:00:00",
+        "modify_time": "2026-01-02T00:00:00",
+        "content": {
+            "title": "GitHub",
+            "note": "NOTE-SECRET",
+            "content": {
+                "Login": {
+                    "username": "octo",
+                    "email": "octo@example.com",
+                    "password": "PASSWORD-SECRET",
+                    "urls": ["https://github.com", ""],
+                    "totp_uri": "otpauth://totp/x?secret=TOTPSECRETSEED",
+                    "passkeys": [],
+                }
+            },
+            "extra_fields": [{"name": "pin", "content": {"Hidden": "FIELD-SECRET"}}],
+        },
+    }
+
+
+class SanitizeTests(unittest.TestCase):
+    def test_login_keeps_metadata_and_drops_every_secret(self) -> None:
+        clean = fetch.sanitize_item(_secret_login(), "Personal")
+        self.assertEqual(clean["title"], "GitHub")
+        self.assertEqual(clean["item_type"], "login")
+        self.assertEqual(clean["username"], "octo")
+        self.assertEqual(clean["email"], "octo@example.com")
+        self.assertEqual(clean["urls"], ["https://github.com"])
+        self.assertTrue(clean["has_totp"])
+        self.assertTrue(clean["complete"])
+        self.assertEqual(clean["flags"], ["Pinned"])
+        text = json.dumps(clean)
+        for secret in ("PASSWORD-SECRET", "TOTPSECRETSEED", "NOTE-SECRET", "FIELD-SECRET", "totp_uri", "password"):
+            self.assertNotIn(secret, text)
+
+    def test_type_comes_from_the_content_tag(self) -> None:
+        for tag, kind in fetch.CONTENT_TAGS.items():
+            raw = {"id": "x", "content": {"title": "t", "content": {tag: {"number": "4111111111111111"}}}}
+            clean = fetch.sanitize_item(raw, "V")
+            self.assertEqual(clean["item_type"], kind)
+            self.assertNotIn("4111111111111111", json.dumps(clean))
+
+    def test_metadata_only_listing_still_works(self) -> None:
+        clean = fetch.sanitize_item({"id": "x", "title": "T", "item_type": "login"}, "V")
+        self.assertEqual(clean["title"], "T")
+        self.assertFalse(clean["has_totp"])
+        self.assertFalse(clean["complete"])
+
+    def test_items_without_an_id_are_dropped(self) -> None:
+        self.assertIsNone(fetch.sanitize_item({"title": "no id"}, "V"))
+        self.assertIsNone(fetch.sanitize_item("nope", "V"))
+
+
+class ShowSecretsFallbackTests(FetchTestCase):
+    def test_falls_back_to_metadata_when_show_secrets_is_refused(self) -> None:
+        calls = []
+
+        def fake(cli, args, timeout=None):
+            calls.append(args)
+            if "--show-secrets" in args:
+                return subprocess.CompletedProcess(args, 1, "", "show-secrets is not allowed")
+            return subprocess.CompletedProcess(args, 0, json.dumps({"items": [_login_item("a", "s1", "A")]}), "")
+
+        with mock.patch.object(fetch, "run_cli", side_effect=fake):
+            result = fetch.list_vault_items("pass-cli", {"share_id": "s1", "name": "V"})
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["title"] for item in result["items"]], ["A"])
+        self.assertEqual(len(calls), 2)
+
+    def test_session_errors_do_not_retry(self) -> None:
+        calls = []
+
+        def fake(cli, args, timeout=None):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 1, "", "This operation requires an authenticated client. Run pass-cli login")
+
+        with mock.patch.object(fetch, "run_cli", side_effect=fake):
+            result = fetch.list_vault_items("pass-cli", {"share_id": "s1", "name": "V"})
+        self.assertEqual(result["status"], "unauthenticated")
+        self.assertEqual(len(calls), 1)
+
+
 class LockTests(FetchTestCase):
     def test_lock_path_matches_home_cache_omarchy(self) -> None:
         expected = os.path.join(self._tmp.name, ".cache", "omarchy", "proton-pass-fetch.lock")

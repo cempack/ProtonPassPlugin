@@ -162,10 +162,10 @@ function normalizeItem(raw, vaultName) {
     urls: type === "login" ? urlsFrom(payload, raw) : [],
     createTime: stringField(raw, ["create_time", "createTime"]),
     modifyTime: stringField(raw, ["modify_time", "modifyTime"]),
-    hasTotp: payload ? hasTotpFrom(payload) : false,
+    hasTotp: payload ? hasTotpFrom(payload) : (raw.has_totp === true || raw.hasTotp === true),
     state: stringField(raw, ["state"]) || "Active",
     lastUsedAt: Number(raw.lastUsedAt || raw.last_used_at || 0) || 0,
-    previewed: raw.previewed === true
+    previewed: raw.previewed === true || raw.complete === true
   }
 }
 

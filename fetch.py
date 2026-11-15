@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""List Proton Pass login metadata in one shot. Never requests secrets."""
+"""List Proton Pass item metadata in one shot.
+
+pass-cli only returns usernames, URLs and the 2FA flag together with the secrets
+(`--show-secrets`), so this script asks for full items and immediately reduces each
+one to metadata. Passwords, notes, TOTP seeds and custom field values never leave
+this process: they are not printed, cached or passed to the shell.
+"""
 
 from __future__ import annotations
 
@@ -170,6 +176,60 @@ def sanitized_vault_name(vault: dict) -> str:
     return name[:64]
 
 
+CONTENT_TAGS = {
+    "Login": "login",
+    "Note": "note",
+    "Alias": "alias",
+    "CreditCard": "credit-card",
+    "Identity": "identity",
+    "SshKey": "ssh-key",
+    "Wifi": "wifi",
+    "Custom": "custom",
+}
+METADATA_KEYS = ("id", "share_id", "vault_id", "state", "create_time", "modify_time")
+
+
+def _content(item: dict) -> dict:
+    content = item.get("content")
+    return content if isinstance(content, dict) else {}
+
+
+def _tagged(item: dict) -> tuple[str, dict]:
+    inner = _content(item).get("content")
+    if isinstance(inner, dict):
+        for tag, kind in CONTENT_TAGS.items():
+            payload = inner.get(tag)
+            if tag in inner:
+                return kind, payload if isinstance(payload, dict) else {}
+    return "", {}
+
+
+def _text(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def sanitize_item(item: dict, vault_name: str) -> Optional[dict]:
+    """Reduce a pass-cli item (with or without secrets) to display metadata only."""
+    if not isinstance(item, dict) or not _text(item.get("id")):
+        return None
+    tagged_type, payload = _tagged(item)
+    item_type = _text(item.get("item_type")) or tagged_type or "custom"
+    out = {key: _text(item.get(key)) for key in METADATA_KEYS}
+    out["title"] = _text(item.get("title")) or _text(_content(item).get("title"))
+    out["item_type"] = item_type
+    out["vault_name"] = vault_name
+    flags = item.get("flags")
+    out["flags"] = [str(flag) for flag in flags if isinstance(flag, (str, int))] if isinstance(flags, list) else []
+    if item_type == "login":
+        out["username"] = _text(payload.get("username"))
+        out["email"] = _text(payload.get("email"))
+        urls = payload.get("urls")
+        out["urls"] = [_text(url) for url in urls if _text(url)] if isinstance(urls, list) else []
+        out["has_totp"] = bool(_text(payload.get("totp_uri")))
+        out["complete"] = bool(payload)
+    return out
+
+
 def as_list(value):
     if isinstance(value, list):
         return value
@@ -186,18 +246,11 @@ def list_vault_items(cli: str, vault: dict) -> dict:
     name = sanitized_vault_name(vault)
     if not share_id:
         return {"ok": False, "status": "error", "name": name, "shareId": "", "items": []}
-    result = run_cli(
-        cli,
-        [
-            "item",
-            "list",
-            f"--share-id={share_id}",
-            "--filter-state",
-            "active",
-            "--output",
-            "json",
-        ],
-    )
+    args = ["item", "list", f"--share-id={share_id}", "--filter-state", "active", "--output", "json"]
+    result = run_cli(cli, [*args, "--show-secrets"])
+    if result.returncode != 0 and classify(result.stderr or result.stdout or "", result.returncode) == "error":
+        # Some sessions (agent / access-token logins) refuse --show-secrets; metadata still lists.
+        result = run_cli(cli, args)
     if result.returncode != 0:
         detail = result.stderr or result.stdout or ""
         return {
@@ -211,12 +264,8 @@ def list_vault_items(cli: str, vault: dict) -> dict:
         parsed = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
         return {"ok": False, "status": "error", "name": name, "shareId": share_id, "items": []}
-    items = []
-    for item in as_list(parsed):
-        if isinstance(item, dict):
-            item = dict(item)
-            item["vault_name"] = name
-            items.append(item)
+    items = [clean for clean in (sanitize_item(item, name) for item in as_list(parsed)) if clean]
+    del parsed
     return {"ok": True, "status": "ready", "name": name, "shareId": share_id, "items": items}
 
 
