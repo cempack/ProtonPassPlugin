@@ -1,6 +1,6 @@
 # Proton Pass
 
-Search Proton Pass items from the Omarchy bar and inspect logins, notes, cards, identities, aliases, Wi-Fi, SSH keys, and custom fields in a popover.
+Your Proton Pass vault in the Omarchy bar: search, copy passwords and live 2FA codes, inspect every item type, generate passwords and save new logins, all from the keyboard.
 
 ## Requirements
 
@@ -41,26 +41,27 @@ omarchy plugin enable "$PLUGIN_ID" --section right
 
 ## Usage
 
-Click the key icon in the bar to open or close the panel. Press Escape to close it (or to go back from an item).
+Click the key icon in the bar (or bind `omarchy-shell io.github.cempack.proton-pass toggle` to a key). Right-click the icon to sync, middle-click to open the Proton Pass app.
 
-- Search filters titles, usernames, URLs, vault names, and item types
-- **Suggested** matches the active window
-- **Most recent** is last used in this panel (then last modified)
-- Click a row to open the inspector (copy fields, reveal secrets, live TOTP)
-- Enter copies a login password and closes when the clipboard is ready. For every other type, Enter opens the inspector instead of dumping notes or keys onto the clipboard. Copied secrets stay on the clipboard until something overwrites them unless `clipboardClearSeconds` is set above 0.
-- `+` opens a single-page login form with account details, vault selection, password generation, and one Create Login action; the window button opens the Proton Pass app
-- Right-click the bar icon to force-refresh; middle-click opens Proton Pass
-- Titles, usernames, URLs, and item types are cached on disk (never passwords, TOTP, notes, card numbers, or extra field values). The panel opens from cache and refreshes in the background when the cache is older than `cacheMinutes` (default 15).
+**List.** Type to search titles, usernames, websites, vaults and types; every word must match and title matches rank first. **Suggested** items match the focused window. Chips under the search filter by type (All, 2FA, Logins, Aliases, Notes, Cards, Identities, SSH, Wi-Fi) with counts, and a vault picker appears when you have more than one vault. Items with 2FA show their live code and a countdown ring; click the code to copy it.
+
+**Details.** A header with the site icon and quick actions (password, username, 2FA, open website), a large live 2FA card, and every field grouped by section. Secrets stay masked until you reveal them.
+
+**Generator.** Random passwords (length, uppercase, numbers, symbols) or passphrases (words, separator, capitalisation, numbers) from `pass-cli password generate`, with a strength meter. Copy the result or start a new login with it.
+
+**New login.** Title, username or email, website, vault and password. Leave the password blank and one is generated on save.
+
+The footer always shows the keys for the current page and turns into a confirmation (or error) after an action.
 
 ## Keyboard
 
-- `/`: focus search
-- `j` / `k` or arrows: move
-- Enter: copy a login password and close, or open the inspector for other types
-- `c`: copy the login password on the detail view
-- `r`: refresh
-- Escape: back / close
-- On the create-login form, Enter advances fields and submits from Password
+| Where | Keys |
+| --- | --- |
+| Everywhere | `Ctrl+G` generator · `Ctrl+N` new login · `Ctrl+R` sync · `Tab` next bar panel · `Esc` back / close |
+| List | `↑↓` `PgUp` `PgDn` move · `↵` copy password (opens other types) · `Shift+↵` copy username · `Ctrl+↵` copy 2FA code · `→` details · `Ctrl+O` open website · `Ctrl+←/→` change filter |
+| Details | `↑↓` (or `j`/`k`) field · `↵` copy field · `Space` reveal · `c` password · `u` username · `t` 2FA code · `Ctrl+O` website · `←` back |
+| Generator | `↵`/`c` copy · `r` regenerate · `m` switch mode · `←/→` length or words · `n` new login with this password |
+| New login | `↵` next field · `Ctrl+↵` save · `Ctrl+G` generate a password |
 
 ## Configure
 
@@ -80,4 +81,13 @@ omarchy plugin remove io.github.cempack.proton-pass
 
 MIT. See [LICENSE](LICENSE).
 
-The plugin talks to a local `pass-cli` process and copies secrets to the clipboard with `wl-copy`. User-entered passwords for new logins are serialized as a JSON login template and sent only over the child process's standard input; they are never placed in process arguments. Blank-password creation generates a password first, then sends that value over stdin with the rest of the login template. Username and URL clipboard copies also send the text to `wl-copy` over stdin rather than command-line arguments. If `clipboardClearSeconds` is greater than 0, the plugin later runs `wl-copy --clear` so a copied secret does not stay on the clipboard indefinitely. The plugin never writes passwords, TOTP codes, note bodies, card numbers, or `--show-secrets` list output to disk or logs. The inspector loads one item at a time into memory and clears it when you go back or close the panel. Title, username, URL, and item-type metadata may be cached at `~/.cache/omarchy/proton-pass.json`. Login row icons try every website on the item: first `https://<host>/favicon.ico`, then `https://www.google.com/s2/favicons?domain=<host>&sz=64`, then the parent domain (so `konsoleh.hetzner.com` can still land on `hetzner.com`). Localhost and IP addresses are skipped. The type glyph stays until one image loads. Cached usernames no longer skip the one-time website preview, so icons can fill in after a refresh. Omarchy plugins run unsandboxed in the shell process.
+## How secrets are handled
+
+- **Listing.** `fetch.py` asks `pass-cli` for full items (`--show-secrets`) because that is the only way to get usernames, websites and the 2FA flag in one call, then immediately reduces every item to metadata. Passwords, notes, TOTP seeds, card numbers and custom field values never leave that short-lived process. Only metadata (title, type, username, email, websites, vault, 2FA flag, last used) is cached, at `~/.cache/omarchy/proton-pass.json`.
+- **Live 2FA.** While a 2FA row is on screen, `totp_feed.py` reads the TOTP seeds once, keeps them in its own memory and prints only the current codes (RFC 6238). It exits when the panel closes, or after 10 minutes.
+- **Copying.** Passwords and other fields go straight from `pass-cli item view` into `wl-copy` through a pipe, so they never enter the shell's memory. Values the panel already shows (2FA codes, generated passwords, usernames) are written to `wl-copy` over stdin, never as arguments. With `clipboardClearSeconds` above 0 the clipboard is cleared that many seconds later.
+- **Details.** The detail view loads one item into memory and drops it when you go back or close the panel.
+- **New logins** are sent to `pass-cli` as a JSON template on stdin; passwords are never process arguments.
+- **Icons** are fetched from each website (`/favicon.ico`, then Google's favicon service, then the parent domain). Localhost and IP addresses are skipped.
+
+Omarchy plugins run unsandboxed in the shell process.

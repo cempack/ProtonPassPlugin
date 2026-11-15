@@ -2,17 +2,19 @@
   "schemaVersion": 1,
   "id": "io.github.cempack.proton-pass",
   "name": "Proton Pass",
-    "version": "1.2.1",
+  "version": "2.0.0",
   "author": "Elliot",
   "license": "MIT",
-  "description": "Search Proton Pass items and inspect logins, notes, cards, and 2FA from the Omarchy bar.",
-  "kinds": ["bar-widget"],
+  "description": "Search Proton Pass, copy passwords and live 2FA codes, generate passwords and save logins from the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Proton Pass",
-    "description": "Search Proton Pass items and copy secrets from the bar.",
+    "description": "Proton Pass search, live 2FA and a password generator.",
     "category": "Security",
     "allowMultiple": false,
     "defaultSection": "right",
