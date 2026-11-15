@@ -72,6 +72,28 @@ class FetchTestCase(unittest.TestCase):
         return code, payload
 
 
+class SessionDirTests(FetchTestCase):
+    def test_default_session_dir_is_private_to_the_plugin(self) -> None:
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "", "HOME": "/home/u"}):
+            self.assertEqual(fetch.session_dir(), "/home/u/.local/share/omarchy-proton-pass")
+
+    def test_xdg_data_home_is_respected(self) -> None:
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/data"}):
+            self.assertEqual(fetch.session_dir(), "/data/omarchy-proton-pass")
+
+    def test_cli_env_uses_private_session_and_dbus_keyring(self) -> None:
+        env = {"HOME": "/home/u", "XDG_DATA_HOME": ""}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(fetch, "ensure_omarchy_keyring"):
+            cli_env = fetch.cli_env()
+        self.assertEqual(cli_env["PROTON_PASS_SESSION_DIR"], "/home/u/.local/share/omarchy-proton-pass")
+        self.assertEqual(cli_env["PROTON_PASS_LINUX_KEYRING"], "dbus")
+
+    def test_session_dir_from_the_service_is_not_overridden(self) -> None:
+        env = {"PROTON_PASS_SESSION_DIR": "/custom"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(fetch, "ensure_omarchy_keyring"):
+            self.assertEqual(fetch.cli_env()["PROTON_PASS_SESSION_DIR"], "/custom")
+
+
 class LockTests(FetchTestCase):
     def test_lock_path_matches_home_cache_omarchy(self) -> None:
         expected = os.path.join(self._tmp.name, ".cache", "omarchy", "proton-pass-fetch.lock")

@@ -13,11 +13,6 @@ const readmeSource = fs.readFileSync(path.join(ROOT, "README.md"), "utf8")
 const fetchSource = fs.readFileSync(path.join(ROOT, "fetch.py"), "utf8")
 const allRuntimeSource = [modelSource, serviceSource, panelSource].join("\n")
 
-const recoveryCommands = [
-  "PROTON_PASS_LINUX_KEYRING=dbus pass-cli logout --force",
-  "PROTON_PASS_LINUX_KEYRING=dbus pass-cli login"
-]
-
 function processSection(id, nextId) {
   const start = serviceSource.indexOf("id: " + id)
   assert.ok(start >= 0, "missing process " + id)
@@ -160,21 +155,28 @@ assert.match(
   "empty partial state does not render its warning twice"
 )
 
-for (const command of recoveryCommands) {
-  assert.ok(readmeSource.includes(command), "README must document exact migration recovery command: " + command)
-  assert.ok(!panelSource.includes(command), "panel must not dump recovery commands as UI text: " + command)
-  assert.ok(!serviceSource.includes(command), "service must not dump recovery commands as UI text: " + command)
-}
+// The plugin owns a private pass-cli session, so a terminal login can never break it.
+assert.match(serviceSource, /"PROTON_PASS_SESSION_DIR":\s*sessionDir/, "service passes its private session dir to every pass-cli call")
+assert.match(fetchSource, /setdefault\("PROTON_PASS_SESSION_DIR"/, "fetch.py uses the same private session dir")
+assert.ok(!/\.local\/share"\)\s*\+\s*"\/omarchy"/.test(serviceSource), "session dir must not sit under the read-only omarchy data symlink")
+assert.match(readmeSource, /never (touches|uses|reads)[^.]*terminal/i, "README states the terminal pass-cli session is untouched")
 assert.match(
   panelSource,
-  /if \(pass\.status === "migration-required"\) return "[^"]*pass-cli login[^"]*"/,
+  /if \(pass\.status === "migration-required"\) return "[^"]*Sign in[^"]*"/,
   "migration status uses a human-readable hint"
 )
 assert.match(
   serviceSource,
-  /if \(kind === "migration-required"\)\s*\n?\s*return "[^"]*pass-cli login[^"]*"/,
+  /if \(kind === "migration-required"\)\s*\n?\s*return "[^"]*Sign in[^"]*"/,
   "migration lastError is a human-readable hint"
 )
+assert.match(panelSource, /pass\.signingIn\s*\?\s*pass\.cancelSignIn\(\)\s*:\s*pass\.signIn\(\)/, "panel offers Sign in and Cancel")
+assert.match(serviceSource, /id:\s*loginProcess[\s\S]*environment:\s*root\.passCliEnvironment/, "sign-in runs in the private session")
+assert.match(serviceSource, /\^https:\\\/\\\/account\\\.proton\\\.me\\\//, "only Proton account URLs are opened")
+const loginSection = processSection("loginProcess", "openUrlProcess")
+assert.ok(!/logout --force/.test(loginSection), "session reset lives in signIn(), not in a bare process")
+const logoutUses = serviceSource.split("logout --force").length - 1
+assert.strictEqual(logoutUses, 1, "logout --force is only used by the plugin's own sign-in reset")
 assert.match(serviceSource, /migration-required/, "migration status is handled by the service")
 assert.match(panelSource, /migration-required/, "migration status blocks the normal panel flow")
 assert.match(
@@ -187,7 +189,6 @@ assert.match(
   /id:\s*generateProcess[\s\S]*stderr:[\s\S]*classifyError/,
   "password generation also surfaces migration-required failures"
 )
-assert.match(readmeSource, /never|does not automatically|will not automatically/i, "README states recovery is not automatic")
 
 assert.match(panelSource, /Create Login/, "create view has a clear title and primary action")
 assert.match(panelSource, /ACCOUNT DETAILS/, "create view separates account details")

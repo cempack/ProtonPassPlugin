@@ -5,26 +5,21 @@ Search Proton Pass items from the Omarchy bar and inspect logins, notes, cards, 
 ## Requirements
 
 - [`pass-cli`](https://protonpass.github.io/pass-cli/) on `PATH` (or set `passCliPath` in the widget settings)
-- A logged-in `pass-cli` session (`pass-cli login`)
 - `wl-copy` for clipboard copy
 - Optional: the Proton Pass desktop app (`proton-pass`) for the header's open-app buttons
 
-The plugin sets `PROTON_PASS_LINUX_KEYRING=dbus` so the session is stored in GNOME Keyring and survives reboots. On Omarchy it binds that D-Bus store to the unlocked **Default keyring** (not a new password-protected **Default Keyring**). After installing or switching to this, run `pass-cli login` once more (an old kernel-keyring session will not carry over).
+## Signing in
 
-If `pass-cli` reports an SQLCipher HMAC, database decryption, or encryption-key mismatch after switching keyrings, run these one-time recovery commands exactly:
+Open the panel and click **Sign in**. The plugin runs `pass-cli login` for you and opens the Proton sign-in page in your browser; once you finish there, your items appear. There is nothing to configure and no command to run.
 
-```sh
-PROTON_PASS_LINUX_KEYRING=dbus pass-cli logout --force
-PROTON_PASS_LINUX_KEYRING=dbus pass-cli login
-```
+The plugin keeps its own `pass-cli` session in `~/.local/share/omarchy-proton-pass` (or `$XDG_DATA_HOME/omarchy-proton-pass`), with the encryption key stored in GNOME Keyring so it survives reboots. On Omarchy the key is bound to the unlocked **Default keyring** rather than a new password-protected **Default Keyring**.
 
-The plugin never runs these commands automatically and never deletes or resets local `pass-cli` state. Until recovery is complete, fetching and secret previews stop and the panel asks you to run `pass-cli login`, then right-click the bar icon to refresh.
+Because the session is separate, the plugin never touches your terminal's `pass-cli` session, and a `pass-cli login` or `logout` in a terminal never affects the plugin. If the plugin's own session ever becomes unreadable or locked, the panel shows **Sign in** again; signing in replaces only the plugin's session.
 
-On Omarchy / Arch:
+Install `pass-cli` on Omarchy / Arch:
 
 ```sh
 omarchy pkg aur add proton-pass-cli
-pass-cli login
 ```
 
 ## Install

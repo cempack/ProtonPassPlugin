@@ -57,9 +57,18 @@ def ensure_omarchy_keyring() -> None:
     _keyring_ready = True
 
 
+def session_dir() -> str:
+    """The plugin's private pass-cli session, kept apart from any terminal login."""
+    data = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.environ.get("HOME") or os.path.expanduser("~"), ".local", "share"
+    )
+    return os.path.join(data, "omarchy-proton-pass")
+
+
 def cli_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PROTON_PASS_LINUX_KEYRING"] = "dbus"
+    env.setdefault("PROTON_PASS_SESSION_DIR", session_dir())
     ensure_omarchy_keyring()
     return env
 

@@ -65,11 +65,13 @@ Panel {
   readonly property bool showDetail: viewMode === "detail" && selectedItem !== null
   readonly property bool showCreate: viewMode === "create"
   readonly property bool showLoading: pass.refreshing && pass.items.length === 0 && pass.status !== "missing" && pass.status !== "unauthenticated" && pass.status !== "locked" && pass.status !== "migration-required" && pass.status !== "error"
+  readonly property bool needsSignIn: pass.status === "unauthenticated" || pass.status === "locked" || pass.status === "migration-required"
   readonly property string statusHint: {
-    if (pass.status === "missing") return "Install pass-cli, then sign in with pass-cli login."
-    if (pass.status === "unauthenticated") return "Run pass-cli login in a terminal."
-    if (pass.status === "locked") return "Unlock the session, then reopen this panel."
-    if (pass.status === "migration-required") return "Run pass-cli login in a terminal, then right-click the bar icon to refresh."
+    if (pass.status === "missing") return "Install pass-cli, then reopen this panel to sign in."
+    if (needsSignIn && pass.signingIn) return "Finish signing in in your browser."
+    if (pass.status === "unauthenticated") return "Sign in to see your Proton Pass items."
+    if (pass.status === "locked") return "The session is locked. Sign in again to continue."
+    if (pass.status === "migration-required") return "The saved session could not be read. Sign in again to continue."
     if (pass.status === "error") return pass.lastError || "Could not load Proton Pass."
     if (listReady && pass.items.length === 0 && pass.fetchWarning !== "") return pass.fetchWarning
     if (listReady && pass.items.length === 0 && pass.lastError !== "") return pass.lastError
@@ -675,7 +677,34 @@ Panel {
             readOnly: true
             selectByMouse: true
             selectByKeyboard: true
-            activeFocusOnTab: pass.status === "migration-required"
+            Keys.onEscapePressed: function(event) {
+              root.handleCloseRequest()
+              event.accepted = true
+            }
+          }
+
+          Text {
+            visible: root.needsSignIn && !root.showDetail && !root.showCreate && !pass.signingIn && pass.lastError !== ""
+            width: parent.width
+            text: pass.lastError
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Button {
+            visible: root.needsSignIn && !root.showDetail && !root.showCreate
+            width: parent.width
+            text: pass.signingIn ? "Cancel" : "Sign in"
+            iconText: pass.signingIn ? "󰜺" : "󰍂"
+            selected: !pass.signingIn
+            bordered: true
+            focusable: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            verticalPadding: Style.space(10)
+            onClicked: pass.signingIn ? pass.cancelSignIn() : pass.signIn()
             Keys.onEscapePressed: function(event) {
               root.handleCloseRequest()
               event.accepted = true

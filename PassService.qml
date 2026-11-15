@@ -17,6 +17,7 @@ Item {
   property bool totpLoading: false
   property bool previewing: false
   property bool creating: false
+  property bool signingIn: false
   property bool generatingPassword: false
   property string status: "idle"  // idle | loading | ready | missing | unauthenticated | locked | migration-required | error
   property string lastError: ""
@@ -44,8 +45,12 @@ Item {
     var value = String(setting("passCliPath", "pass-cli") || "pass-cli").trim()
     return value !== "" ? value : "pass-cli"
   }
+  // The plugin keeps its own pass-cli session so a `pass-cli login` run in a terminal
+  // (which uses a different key store) can never make the stored database unreadable here.
+  readonly property string sessionDir: (Quickshell.env("XDG_DATA_HOME") || (Quickshell.env("HOME") + "/.local/share")) + "/omarchy-proton-pass"
   readonly property var passCliEnvironment: ({
-    "PROTON_PASS_LINUX_KEYRING": "dbus"
+    "PROTON_PASS_LINUX_KEYRING": "dbus",
+    "PROTON_PASS_SESSION_DIR": sessionDir
   })
   readonly property string cacheDir: Quickshell.env("HOME") + "/.cache/omarchy"
   readonly property string cachePath: cacheDir + "/proton-pass.json"
@@ -94,6 +99,7 @@ Item {
   property int _lastTotpRemaining: 0
   property bool _writingCache: false
   property bool _cacheHydrated: false
+  property bool _signInCancelled: false
   property bool _dirReady: false
   property bool _startupRefreshDone: false
   property bool _openWantsFresh: false
@@ -387,10 +393,10 @@ Item {
 
   function statusMessageFor(kind, stderr) {
     if (kind === "missing") return "pass-cli is not installed"
-    if (kind === "unauthenticated") return "Sign in with pass-cli login"
-    if (kind === "locked") return "Session is locked. Run pass-cli session unlock"
+    if (kind === "unauthenticated") return "Sign in to Proton Pass"
+    if (kind === "locked") return "Session is locked. Sign in again"
     if (kind === "migration-required")
-      return "Run pass-cli login in a terminal, then right-click the bar icon to refresh."
+      return "The saved session could not be read. Sign in again"
     return elideStatus(stderr) || "Could not load Proton Pass"
   }
 
@@ -411,6 +417,50 @@ Item {
     }
     if (items.length > 0 && !isStale()) return
     refresh(false)
+  }
+
+  // Runs `pass-cli login` in the plugin's own session and opens the sign-in page it prints.
+  // A locked or unreadable session belongs to this plugin alone, so it is cleared first.
+  function signIn() {
+    if (signingIn || status === "missing") return
+    var reset = status === "locked" || status === "migration-required"
+    signingIn = true
+    _signInCancelled = false
+    lastError = ""
+    loginProcess.command = ["sh", "-c",
+      'if [ "$2" = reset ]; then "$1" logout --force >/dev/null 2>&1; fi; exec "$1" login',
+      "proton-pass-sign-in", passCli, reset ? "reset" : "keep"]
+    loginProcess.running = true
+    signInTimer.restart()
+  }
+
+  function cancelSignIn() {
+    if (!signingIn) return
+    _signInCancelled = true
+    signInTimer.stop()
+    loginProcess.signal(15)
+  }
+
+  function handleSignInLine(line) {
+    var url = String(line || "").trim()
+    if (!/^https:\/\/account\.proton\.me\/\S+$/.test(url)) return
+    openUrlProcess.command = ["xdg-open", url]
+    openUrlProcess.running = true
+  }
+
+  function finishSignIn(exitCode, stderr) {
+    signInTimer.stop()
+    signingIn = false
+    if (_signInCancelled) {
+      _signInCancelled = false
+      return
+    }
+    if (exitCode !== 0) {
+      lastError = elideStatus(stderr) || "Sign-in did not complete."
+      return
+    }
+    status = "idle"
+    refresh(true)
   }
 
   function refresh(force, silent) {
@@ -967,11 +1017,39 @@ Item {
   Process {
     id: ensureCacheDir
     running: false
-    command: ["mkdir", "-p", "-m", "0700", root.cacheDir]
+    command: ["mkdir", "-p", "-m", "0700", root.cacheDir, root.sessionDir]
     onExited: {
       root._dirReady = true
       cacheFile.reload()
       root.afterCacheReady()
+    }
+  }
+
+  Process {
+    id: loginProcess
+    running: false
+    command: []
+    environment: root.passCliEnvironment
+    stdout: SplitParser {
+      onRead: function(line) { root.handleSignInLine(line) }
+    }
+    stderr: StdioCollector { id: loginStderr; waitForEnd: true }
+    onExited: function(exitCode) { root.finishSignIn(exitCode, String(loginStderr.text || "")) }
+  }
+
+  Process {
+    id: openUrlProcess
+    running: false
+    command: []
+  }
+
+  Timer {
+    id: signInTimer
+    interval: 300000
+    repeat: false
+    onTriggered: {
+      root.cancelSignIn()
+      root.lastError = "Sign-in timed out."
     }
   }
 
