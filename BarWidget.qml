@@ -72,7 +72,12 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰌆"
+    iconComponent: Component {
+      PassIcon {
+        iconSize: button.fontSize
+        color: button.foreground
+      }
+    }
     tooltipText: "Proton Pass"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) root.refresh()

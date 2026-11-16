@@ -84,9 +84,17 @@ FocusScope {
     visible: root.kind !== "loading"
     spacing: Style.space(10)
 
+    PassIcon {
+      Layout.alignment: Qt.AlignHCenter
+      visible: root.kind === "signin"
+      iconSize: Style.font.displayLarge + 8
+      color: panel.accent
+    }
+
     Text {
       Layout.alignment: Qt.AlignHCenter
-      text: root.kind === "signin" ? "󰌆" : root.kind === "missing" ? "󰏗" : "󰀦"
+      visible: root.kind !== "signin"
+      text: root.kind === "missing" ? "󰏗" : "󰀦"
       color: root.kind === "error" ? panel.urgent : panel.accent
       font.family: panel.fontFamily
       font.pixelSize: Style.font.displayLarge + 8

@@ -40,12 +40,10 @@ Item {
       onClicked: panel.back()
     }
 
-    Text {
+    PassIcon {
       visible: !root.subPage
-      text: "󰌆"
+      iconSize: Style.font.icon + 6
       color: panel.accent
-      font.family: panel.fontFamily
-      font.pixelSize: Style.font.icon + 2
       Layout.alignment: Qt.AlignVCenter
     }
 
